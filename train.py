@@ -251,25 +251,6 @@ for update in range(max_iterations):
         torch.save(agent.critic.state_dict(), log_path + f"critic_iter_{update+1}.pth")
         print(f"Checkpoint saved at iteration {update+1}")
 
-    # task-specific success criteria
-    if "Cartpole" in args_cli.task:
-        success_threshold = 5.0
-    elif "Lift" in args_cli.task:
-        success_threshold = 200
-    elif "Repose" in args_cli.task:
-        success_threshold = 5000.0
-    elif "Stack" in args_cli.task:
-        success_threshold = 10.0
-    elif "Drawer" in args_cli.task:
-        success_threshold = 100.0
-    else:
-        success_threshold = 2.0  # Reach
-    
-    # check if task is solved
-    if len(episode_rewards) >= 10000 and avg_reward >= success_threshold:
-        print(f"Task solved! Average reward: {avg_reward:.2f} at update {update + 1}")
-        break
-
 env.close()
 
 # save final model
