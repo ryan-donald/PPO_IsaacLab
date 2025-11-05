@@ -23,18 +23,12 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import gymnasium as gym
-import numpy as np
 import isaaclab_tasks
 from isaaclab_tasks.utils import parse_env_cfg
 
 import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-from torch.distributions import Normal
 import numpy as np
 import random
-
 import os
 
 from ppo import PPOAgent
@@ -265,7 +259,7 @@ np.savez(
     episode_rewards=np.array(episode_rewards),
     episode_lengths=np.array(episode_lengths)
 )
-print(f"\n✓ Training data saved to {log_path}training_data.npz")
+print(f"\nTraining data saved to {log_path}training_data.npz")
 
 print(f"\nTraining complete! Final model saved.")
 print(f"Total episodes: {len(episode_rewards)}")
