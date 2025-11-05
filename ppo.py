@@ -43,7 +43,7 @@ class PPOAgent:
         self.update_count = 0
 
     def select_action(self, state_obs):
-        # selects action based upon current policy,
+        # selects action based upon an observation and the current policy,
         # returns action, log_prob, entropy
         if not torch.is_tensor(state_obs):
             state_obs = torch.tensor(state_obs, dtype=torch.float, device=self.device)
