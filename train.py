@@ -133,6 +133,14 @@ current_episode_lengths = torch.zeros(num_envs, device=device)
 plot_data = []
 reward_steps = []
 
+# per-term reward logging
+reward_manager = env.unwrapped.reward_manager
+term_names = reward_manager.active_terms
+num_terms = len(term_names)
+current_term_rewards = torch.zeros(num_envs, num_terms, device=device)  # accumulator per env
+episode_term_rewards = {name: [] for name in term_names}   # completed episode sums
+print(f"Logging {num_terms} reward terms: {term_names}")
+
 for update in range(max_iterations):
     states = torch.zeros((num_steps, num_envs, state_dim)).to(device)
     actions = torch.zeros((num_steps, num_envs, action_dim), dtype=torch.float).to(device)
