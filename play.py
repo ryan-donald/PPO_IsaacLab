@@ -2,20 +2,6 @@ import argparse
 from datetime import datetime
 from isaaclab.app import AppLauncher
 
-import gymnasium as gym
-import numpy as np
-import isaaclab_tasks
-from isaaclab_tasks.utils import parse_env_cfg
-
-import torch
-import numpy as np
-import random
-
-import os
-
-from ppo import PPOAgent
-from env_cfgs import EnvConfig
-
 # add argparse arguments
 parser = argparse.ArgumentParser(description="PPO agent evaluation for IsaacLab environments.")
 parser.add_argument("--checkpoint", type=str, default=None, help="checkpoint file for actor network.")
@@ -36,6 +22,20 @@ args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+import gymnasium as gym
+import numpy as np
+import isaaclab_tasks
+from isaaclab_tasks.utils import parse_env_cfg
+
+import torch
+import numpy as np
+import random
+
+import os
+
+from ppo import PPOAgent
+from env_cfgs import EnvConfig
+
 # set device before using it in class instantiation
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
@@ -52,23 +52,18 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 env_cfg = parse_env_cfg(
-    args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
+    args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs
 )
 
 env_cfg.seed = seed
-
-# For Stack environment, enable observation concatenation for PPO training
-if "Stack" in args_cli.task:
-    env_cfg.observations.policy.concatenate_terms = True
-    print("Enabled observation concatenation for Stack environment")
 
 # create environment
 render_mode = "rgb_array" if args_cli.video else None
 env = gym.make(args_cli.task, cfg=env_cfg, render_mode=render_mode)
 
-# Wrap environment for video recording if requested
+# wrap environment for video recording if requested
 if args_cli.video:
-    # Create video directory with timestamp
+    # create video directory with timestamp
     video_dir = os.path.join(
         "logs", 
         "test_videos", 
@@ -77,7 +72,7 @@ if args_cli.video:
     )
     os.makedirs(video_dir, exist_ok=True)
     
-    # Wrap with RecordVideo
+    # wrap with RecordVideo
     env = gym.wrappers.RecordVideo(
         env,
         video_folder=video_dir,
@@ -88,7 +83,7 @@ if args_cli.video:
 env.reset()
 
 
-# Get world positions of links using correct API
+# get world positions of links using correct API
 robot = env.unwrapped.scene["robot"]
 body_names = robot.data.body_names
 gripper_idx = body_names.index("gripper_frame_link")
@@ -106,7 +101,6 @@ num_learning_epochs = env_config.num_learning_epochs
 max_iterations = env_config.max_iterations
 
 # store state and action dimensions
-# Check observation space type first before accessing shape
 if isinstance(env.observation_space, gym.spaces.Dict):
     state_dim = env.observation_space['policy'].shape[1]
 else:

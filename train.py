@@ -1,22 +1,8 @@
 import argparse
-
 from isaaclab.app import AppLauncher
-import gymnasium as gym
-import isaaclab_tasks
-from isaaclab_tasks.utils import parse_env_cfg
-
-import torch
-from torch.utils.tensorboard import SummaryWriter
-import numpy as np
-import random
-import os
-
-from ppo import PPOAgent
-from env_cfgs import EnvConfig
-
 
 # add argparse arguments
-parser = argparse.ArgumentParser(description="PPO agent training for IsaacLab environments.")
+parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environments.")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
@@ -30,6 +16,21 @@ args_cli = parser.parse_args()
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
+
+import gymnasium as gym
+import numpy as np
+import isaaclab_tasks
+from isaaclab_tasks.utils import parse_env_cfg
+
+import torch
+import numpy as np
+import random
+
+import os
+from torch.utils.tensorboard import SummaryWriter
+
+from ppo import PPOAgent
+from env_cfgs import EnvConfig
 
 # set device before using it in class instantiation
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -47,7 +48,7 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 env_cfg = parse_env_cfg(
-    args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
+    args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs
 )
 
 env_cfg.seed = seed
