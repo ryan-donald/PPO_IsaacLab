@@ -65,13 +65,13 @@ env = gym.make(args_cli.task, cfg=env_cfg, render_mode=render_mode)
 if args_cli.video:
     # create video directory with timestamp
     video_dir = os.path.join(
-        "logs", 
-        "test_videos", 
-        args_cli.task, 
+        "logs",
+        "test_videos",
+        args_cli.task,
         datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     )
     os.makedirs(video_dir, exist_ok=True)
-    
+
     # wrap with RecordVideo
     env = gym.wrappers.RecordVideo(
         env,
@@ -153,7 +153,8 @@ checkpoint_path = args_cli.checkpoint
 start_iteration = 0
 if os.path.exists(checkpoint_path):
     print(f"\nFound existing checkpoint: {checkpoint_path}")
-    agent.actor.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    agent.actor.load_state_dict(torch.load(
+        checkpoint_path, map_location=device))
     print(f"Loaded checkpoint.")
 
 print("\nStarting evaluation...\n")
@@ -168,7 +169,8 @@ reward_steps = []
 
 for update in range(max_iterations):
     states = torch.zeros((num_steps, num_envs, state_dim)).to(device)
-    actions = torch.zeros((num_steps, num_envs, action_dim), dtype=torch.float).to(device)
+    actions = torch.zeros((num_steps, num_envs, action_dim),
+                          dtype=torch.float).to(device)
     log_probs = torch.zeros((num_steps, num_envs)).to(device)
     rewards = torch.zeros((num_steps, num_envs)).to(device)
     dones = torch.zeros((num_steps, num_envs)).to(device)
@@ -180,7 +182,8 @@ for update in range(max_iterations):
     for step in range(num_steps):
         # handle both Dict and Box observation spaces
         if isinstance(state, dict):
-            state_obs = state['policy'] if 'policy' in state else state[list(state.keys())[0]]
+            state_obs = state['policy'] if 'policy' in state else state[list(state.keys())[
+                0]]
         else:
             state_obs = state
 
@@ -201,8 +204,8 @@ for update in range(max_iterations):
         # accumulate episode rewards and lengths
         current_episode_rewards += rewards[step]
         current_episode_lengths += 1
-        
+
         episode_done_mask = dones[step].bool()
-    
+
 
 env.close()

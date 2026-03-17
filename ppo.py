@@ -8,19 +8,19 @@ from network import Actor, Critic
 
 class PPOAgent:
 
-    def __init__(self, 
-                 state_dim, 
-                 action_dim, 
-                 device=torch.device("cpu"), 
-                 lr=1e-3, 
-                 gamma=0.99, 
-                 gae_lambda=0.95, 
+    def __init__(self,
+                 state_dim,
+                 action_dim,
+                 device=torch.device("cpu"),
+                 lr=1e-3,
+                 gamma=0.99,
+                 gae_lambda=0.95,
                  value_coef=0.5,
-                 clip_epsilon=0.2, 
-                 hidden_dims=[64, 64], 
-                 max_grad_norm=1.0, 
-                 desired_kl=0.01, 
-                 schedule_type="adaptive", 
+                 clip_epsilon=0.2,
+                 hidden_dims=[64, 64],
+                 max_grad_norm=1.0,
+                 desired_kl=0.01,
+                 schedule_type="adaptive",
                  entropy_coef=0.001,
                  use_normalization=True):
 
@@ -28,7 +28,8 @@ class PPOAgent:
         self.device = device
         self.actor = Actor(state_dim, action_dim, hidden_dims).to(device)
         self.critic = Critic(state_dim, hidden_dims).to(device)
-        self.optimizer = optim.Adam(list(self.actor.parameters()) + list(self.critic.parameters()), lr=lr)
+        self.optimizer = optim.Adam(
+            list(self.actor.parameters()) + list(self.critic.parameters()), lr=lr)
 
         # self.actor = torch.compile(self.actor)
         # self.critic = torch.compile(self.critic)
@@ -50,7 +51,8 @@ class PPOAgent:
         # selects action based upon an observation and the current policy,
         # returns action, log_prob, entropy
         if not torch.is_tensor(state_obs):
-            state_obs = torch.tensor(state_obs, dtype=torch.float, device=self.device)
+            state_obs = torch.tensor(
+                state_obs, dtype=torch.float, device=self.device)
         else:
             state_obs = state_obs.to(self.device)
 
@@ -62,26 +64,29 @@ class PPOAgent:
         entropy = dist.entropy().sum(dim=-1)
         log_prob = dist.log_prob(action).sum(dim=-1)
         return action, log_prob, entropy
-    
+
     # @torch.compile
     def compute_gae(self, rewards, values, dones, next_value):
-    # computes normalized generalized advantage estimates (GAE)
-        
+        # computes normalized generalized advantage estimates (GAE)
+
         values_extended = torch.cat([values, next_value.unsqueeze(0)], dim=0)
-        
-        deltas = rewards + self.gamma * values_extended[1:] * (1-dones) - values_extended[:-1]
+
+        deltas = rewards + self.gamma * \
+            values_extended[1:] * (1-dones) - values_extended[:-1]
 
         num_steps = rewards.shape[0]
         advantages = torch.zeros_like(rewards)
         gae = torch.zeros_like(next_value)
 
         for step in reversed(range(num_steps)):
-            gae = deltas[step] + self.gamma * self.gae_lambda * (1 - dones[step]) * gae
+            gae = deltas[step] + self.gamma * \
+                self.gae_lambda * (1 - dones[step]) * gae
             advantages[step] = gae
-        
+
         returns = advantages + values
-        
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        advantages = (advantages - advantages.mean()) / \
+            (advantages.std() + 1e-8)
 
         return advantages, returns
 
@@ -131,7 +136,7 @@ class PPOAgent:
 
                 # calculate log_probs for current policy
                 mu, std = self.actor(batch_states)
-                
+
                 dist = Normal(mu, std)
                 log_probs = dist.log_prob(batch_actions).sum(dim=-1)
                 entropy = dist.entropy().sum(dim=-1).mean()
@@ -140,7 +145,8 @@ class PPOAgent:
                 with torch.no_grad():
                     kl = torch.sum(
                         torch.log(std / (batch_stds_old + 1e-8) + 1e-8)
-                        + (torch.square(batch_stds_old) + torch.square(batch_mus_old - mu))
+                        + (torch.square(batch_stds_old) +
+                           torch.square(batch_mus_old - mu))
                         / (2.0 * torch.square(std) + 1e-8)
                         - 0.5,
                         dim=-1,
@@ -158,7 +164,8 @@ class PPOAgent:
                 # compute surrogate loss
                 ratios = torch.exp(log_probs - batch_log_probs_old)
                 surr1 = ratios * batch_advantages
-                surr2 = torch.clamp(ratios, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * batch_advantages
+                surr2 = torch.clamp(
+                    ratios, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * batch_advantages
                 actor_loss = -torch.min(surr1, surr2).mean()
 
                 # compute clipped value loss
@@ -169,8 +176,10 @@ class PPOAgent:
                     self.clip_epsilon
                 )
                 value_losses = (values - batch_returns).pow(2)
-                value_losses_clipped = (value_pred_clipped - batch_returns).pow(2)
-                critic_loss = torch.max(value_losses, value_losses_clipped).mean()
+                value_losses_clipped = (
+                    value_pred_clipped - batch_returns).pow(2)
+                critic_loss = torch.max(
+                    value_losses, value_losses_clipped).mean()
 
                 # total loss
                 loss = actor_loss + self.value_coef * critic_loss - self.entropy_coef * entropy
@@ -178,13 +187,14 @@ class PPOAgent:
                 # gradient descent step, with a clipped gradient norm
                 self.optimizer.zero_grad()
                 loss.backward()
-                
+
                 torch.nn.utils.clip_grad_norm_(
-                    list(self.actor.parameters()) + list(self.critic.parameters()),
+                    list(self.actor.parameters()) +
+                    list(self.critic.parameters()),
                     self.max_grad_norm
                 )
                 self.optimizer.step()
-        
+
         # average KL divergence over all updates, adjust learning rate if using adaptive schedule
         mean_kl = mean_kl / num_updates if num_updates > 0 else 0
         self.update_count += 1
@@ -195,5 +205,5 @@ class PPOAgent:
                 self.current_lr = min(1e-2, self.current_lr * 1.5)
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = self.current_lr
-        
+
         return mean_kl

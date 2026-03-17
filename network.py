@@ -6,11 +6,12 @@ import numpy as np
 
 from normalization import EmpiricalNormalization
 
+
 class Actor(nn.Module):
-    
+
     def __init__(self, state_dim, action_dim, hidden_dims=[64, 64], use_normalization=True, std=0.3):
         super(Actor, self).__init__()
-        
+
         self.use_normalization = use_normalization
         if use_normalization:
             self.obs_normalizer = EmpiricalNormalization(state_dim)
@@ -20,7 +21,7 @@ class Actor(nn.Module):
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
             prev_dim = hidden_dim
-        
+
         self.hidden_layers = nn.ModuleList(layers)
         self.output_layer = nn.Linear(prev_dim, action_dim)
         self.log_std = nn.Parameter(torch.ones(action_dim) * np.log(std))
@@ -41,33 +42,34 @@ class Actor(nn.Module):
         # normalize observations, then forward pass
         if self.use_normalization:
             x = self.obs_normalizer(x)
-        
+
         for layer in self.hidden_layers:
             x = F.elu(layer(x))
         mu = self.output_layer(x)
         std = torch.exp(self.log_std)
         return mu, std
-    
+
     def update_normalization(self, obs):
         # update observation normalization statistics
         if self.use_normalization:
             self.obs_normalizer.update(obs)
 
+
 class Critic(nn.Module):
 
     def __init__(self, state_dim, hidden_dims=[64, 64], use_normalization=True):
         super(Critic, self).__init__()
-        
+
         self.use_normalization = use_normalization
         if use_normalization:
             self.obs_normalizer = EmpiricalNormalization(state_dim)
-        
+
         layers = []
         prev_dim = state_dim
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
             prev_dim = hidden_dim
-        
+
         self.hidden_layers = nn.ModuleList(layers)
         self.output_layer = nn.Linear(prev_dim, 1)
 
@@ -86,12 +88,12 @@ class Critic(nn.Module):
     def forward(self, x):
         if self.use_normalization:
             x = self.obs_normalizer(x)
-        
+
         for layer in self.hidden_layers:
             x = F.elu(layer(x))
         x = self.output_layer(x)
         return x
-    
+
     def update_normalization(self, obs):
         # update observation normalization statistics
         if self.use_normalization:

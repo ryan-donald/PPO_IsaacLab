@@ -120,8 +120,10 @@ if os.path.exists(checkpoint_path):
     print(f"\nFound existing checkpoint: {checkpoint_path}")
     response = input("Load and continue training? (y/N): ")
     if response.lower() == 'y':
-        agent.actor.load_state_dict(torch.load(checkpoint_path, map_location=device))
-        agent.critic.load_state_dict(torch.load(log_path + "critic_final.pth", map_location=device))
+        agent.actor.load_state_dict(torch.load(
+            checkpoint_path, map_location=device))
+        agent.critic.load_state_dict(torch.load(
+            log_path + "critic_final.pth", map_location=device))
         print(f"Loaded checkpoint. Continuing training...")
 
 print("\nStarting training...\n")
@@ -138,13 +140,16 @@ reward_steps = []
 reward_manager = env.unwrapped.reward_manager
 term_names = reward_manager.active_terms
 num_terms = len(term_names)
-current_term_rewards = torch.zeros(num_envs, num_terms, device=device)  # accumulator per env
-episode_term_rewards = {name: [] for name in term_names}   # completed episode sums
+current_term_rewards = torch.zeros(
+    num_envs, num_terms, device=device)  # accumulator per env
+episode_term_rewards = {name: []
+                        for name in term_names}   # completed episode sums
 print(f"Logging {num_terms} reward terms: {term_names}")
 
 for update in range(max_iterations):
     states = torch.zeros((num_steps, num_envs, state_dim)).to(device)
-    actions = torch.zeros((num_steps, num_envs, action_dim), dtype=torch.float).to(device)
+    actions = torch.zeros((num_steps, num_envs, action_dim),
+                          dtype=torch.float).to(device)
     log_probs = torch.zeros((num_steps, num_envs)).to(device)
     rewards = torch.zeros((num_steps, num_envs)).to(device)
     dones = torch.zeros((num_steps, num_envs)).to(device)
@@ -156,7 +161,8 @@ for update in range(max_iterations):
     for step in range(num_steps):
         # handle both Dict and Box observation spaces
         if isinstance(state, dict):
-            state_obs = state['policy'] if 'policy' in state else state[list(state.keys())[0]]
+            state_obs = state['policy'] if 'policy' in state else state[list(state.keys())[
+                0]]
         else:
             state_obs = state
 
@@ -169,7 +175,7 @@ for update in range(max_iterations):
         with torch.no_grad():
             action, log_prob, entropy = agent.select_action(state_obs)
             value = agent.critic(state_obs).squeeze()
-            
+
             # Get mu and std for KL divergence computation
             mu, std = agent.actor(state_obs)
 
@@ -198,48 +204,53 @@ for update in range(max_iterations):
         current_term_rewards += reward_manager._step_reward.detach()
 
         episode_done_mask = dones[step].bool()
-        
+
         # for any completed episodes, store their rewards and lengths
         if episode_done_mask.any():
             completed_rewards = current_episode_rewards[episode_done_mask]
             completed_lengths = current_episode_lengths[episode_done_mask]
-            
+
             episode_rewards.extend(completed_rewards.cpu().numpy().tolist())
             episode_lengths.extend(completed_lengths.cpu().numpy().tolist())
-            
+
             current_episode_rewards[episode_done_mask] = 0
             current_episode_lengths[episode_done_mask] = 0
 
             # store per-term episode sums for completed envs
             for t_idx, t_name in enumerate(term_names):
                 completed_term = current_term_rewards[episode_done_mask, t_idx]
-                episode_term_rewards[t_name].extend(completed_term.cpu().numpy().tolist())
+                episode_term_rewards[t_name].extend(
+                    completed_term.cpu().numpy().tolist())
             current_term_rewards[episode_done_mask] = 0
 
     # bootstrap next value for GAE
     with torch.no_grad():
         if isinstance(state, dict):
-            next_state_obs = state['policy'] if 'policy' in state else state[list(state.keys())[0]]
+            next_state_obs = state['policy'] if 'policy' in state else state[list(state.keys())[
+                0]]
         else:
             next_state_obs = state
 
         next_value = agent.critic(next_state_obs).squeeze()
-    
+
     # compute GAE advantages and returns
     advantages, returns = agent.compute_gae(rewards, values, dones, next_value)
 
     # update actor and critic networks
-    mean_kl = agent.update(states, actions, log_probs, returns, advantages, values, mus, stds, epochs=num_learning_epochs, batch_size=batch_size)
+    mean_kl = agent.update(states, actions, log_probs, returns, advantages,
+                           values, mus, stds, epochs=num_learning_epochs, batch_size=batch_size)
 
     # logging
-    avg_reward = np.mean(episode_rewards[-100:]) if len(episode_rewards) >= 100 else np.mean(episode_rewards) if episode_rewards else 0.0
-    
+    avg_reward = np.mean(episode_rewards[-100:]) if len(
+        episode_rewards) >= 100 else np.mean(episode_rewards) if episode_rewards else 0.0
+
     # save data for plotting (timestep, average_reward)
     current_timestep = (update + 1) * steps_per_rollout
     plot_data.append((current_timestep, avg_reward))
-    
+
     # logging every update — tensorboard, print every 10
-    recent_rewards = episode_rewards[-100:] if len(episode_rewards) >= 100 else episode_rewards
+    recent_rewards = episode_rewards[-100:] if len(
+        episode_rewards) >= 100 else episode_rewards
     min_reward = np.min(recent_rewards) if recent_rewards else 0
     max_reward = np.max(recent_rewards) if recent_rewards else 0
     std_reward = np.std(recent_rewards) if len(recent_rewards) > 1 else 0
@@ -253,7 +264,8 @@ for update in range(max_iterations):
     writer.add_scalar("train/episodes", len(episode_rewards), update + 1)
 
     for t_name in term_names:
-        recent_term = episode_term_rewards[t_name][-100:] if len(episode_term_rewards[t_name]) >= 100 else episode_term_rewards[t_name]
+        recent_term = episode_term_rewards[t_name][-100:] if len(
+            episode_term_rewards[t_name]) >= 100 else episode_term_rewards[t_name]
         avg_term = np.mean(recent_term) if recent_term else 0.0
         writer.add_scalar(f"rewards/{t_name}", avg_term, update + 1)
 
@@ -272,11 +284,13 @@ for update in range(max_iterations):
         torch.save(agent.actor.state_dict(), log_path + "actor_best.pth")
         torch.save(agent.critic.state_dict(), log_path + "critic_best.pth")
         print(f"New best model saved with average reward: {curr_max:.2f}")
-    
+
     # save checkpoint every 100 iterations
     if (update + 1) % 100 == 0:
-        torch.save(agent.actor.state_dict(), log_path + f"actor_iter_{update+1}.pth")
-        torch.save(agent.critic.state_dict(), log_path + f"critic_iter_{update+1}.pth")
+        torch.save(agent.actor.state_dict(), log_path +
+                   f"actor_iter_{update+1}.pth")
+        torch.save(agent.critic.state_dict(), log_path +
+                   f"critic_iter_{update+1}.pth")
         print(f"Checkpoint saved at iteration {update+1}")
 
 env.close()
@@ -299,4 +313,5 @@ print(f"\n✓ Training data saved to {log_path}training_data.npz")
 print(f"\nTraining complete! Final model saved.")
 print(f"Total episodes: {len(episode_rewards)}")
 if episode_rewards:
-    print(f"Final average reward (last 100 episodes): {np.mean(episode_rewards[-100:]):.2f}")
+    print(
+        f"Final average reward (last 100 episodes): {np.mean(episode_rewards[-100:]):.2f}")

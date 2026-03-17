@@ -18,7 +18,7 @@ class EnvConfig:
         self.desired_kl = 0.01
         self.max_grad_norm = 0.5
         self.gamma = 0.99
-        self.use_normalization=True
+        self.use_normalization = True
 
         # task-specific overrides
         if "Cartpole" in args_cli.task:
@@ -28,7 +28,7 @@ class EnvConfig:
             self.hidden_dims = [32, 32]
             self.entropy_coef = 5e-3
         elif "SO-ARM101" in args_cli.task and "Lift" in args_cli.task:
-            self.lr = 5e-4 
+            self.lr = 5e-4
             self.hidden_dims = [256, 128, 64]
             self.num_learning_epochs = 5
             self.max_iterations = 20000
@@ -38,7 +38,7 @@ class EnvConfig:
             self.use_normalization = True
             self.desired_kl = 0.016
         elif "Lift" in args_cli.task:
-            self.lr=1e-4
+            self.lr = 1e-4
             self.hidden_dims = [256, 128, 64]
             self.num_learning_epochs = 5
             self.max_iterations = 1500
@@ -47,7 +47,7 @@ class EnvConfig:
             self.max_grad_norm = 1.0
             self.use_normalization = False
         elif "SO" in args_cli.task:
-            self.lr=5e-4
+            self.lr = 5e-4
             self.hidden_dims = [256, 128, 64]
             self.num_learning_epochs = 5
             self.max_iterations = 5000
