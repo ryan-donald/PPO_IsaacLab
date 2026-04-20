@@ -1,0 +1,25 @@
+program: src/ryan_ppo/train.py
+
+method: bayes
+
+metric:
+  name: train/avg_reward
+  goal: maximize
+
+parameters:
+  lr:
+    min: 0.0001
+    max: 0.005
+  entropy_coef:
+    values: [0.001, 0.005, 0.01]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--task"
+  - "Isaac-Cartpole-v0"
+  - "--headless"
+  - "--num_envs"
+  - "2048"
+  - "--sweep"

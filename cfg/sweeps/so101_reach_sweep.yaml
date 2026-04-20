@@ -1,0 +1,34 @@
+program: src/ryan_ppo/train.py
+
+method: bayes
+
+metric:
+  name: train/avg_reward
+  goal: maximize
+  
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 0.00005
+    max: 0.005
+  entropy_coef:
+    values: [0.05, 0.01, 0.005, 0.001]
+  gamma:
+    values: [0.99, 0.98, 0.95]
+  num_learning_epochs:
+    values: [3, 5, 8]
+  desired_kl:
+    values: [0.008, 0.016, 0.025]
+  clip_epsilon:
+    values: [0.1, 0.2]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--task"
+  - "Isaac-Reach-SO-ARM101-Normalized-v0"
+  - "--headless"
+  - "--num_envs"
+  - "2048"
+  - "--sweep"
