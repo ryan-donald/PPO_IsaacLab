@@ -3,7 +3,10 @@
 # PPO for IsaacLab
 This is a repository containing my implementation of the Proximal Policy Optimizatino (PPO) Reinforcement Learning algorithm, specifically for use in Nvidia's IsaacLab. I initially developed and tested this algorithm within gymnasium, and then moved to IsaacLab. The base algorithm is not specific to the environment, and will work with any environment as long as the batch data is in the expected format.
 
-![sim](images/so101_reach_sim.gif)
+<div align="center">
+  <video src="https://github.com/ryan-donald/ppo/raw/refs/heads/main/images/so101_reach_sim.mp4" width="100%" controls>
+  </video>
+</div>
 
 # Quickstart
 To use this package, follow the steps below:
@@ -23,12 +26,18 @@ The base algorithm, defined in the files within the 'src/' directory, are portab
 ## Weights and Biases Parameter Sweeping
 This implementation supports parameter sweeping via Weights and Biases. To do this, create a YAML description file in the format of those in "cfg/sweeps/". Within this file, define either a set of discrete values or a distribution for each parameter that you want to be swept. Ensure that *train.py* contains checks for all of the parameters that are being swept to ensure they are actually being used in the runs. After this, run "wandb sweep <sweep config file>" followed by "wandb agent <username>/<project name>/<sweep id>". The results will be logged via Weights and Biases. Shown below is an example plot showing 50 different runs with a reach task, sweeping over a handful of parameters.
 
-![sweep](images/so101_reach_sweep.png)
+<div align="center">
+  <video src="https://raw.githubusercontent.com/ryan-donald/ppo/refs/heads/main/images/so101_reach_sweep.png" width="100%" controls>
+  </video>
+</div>
 
 ## Sim2Real
 Using this package, I have been able to perform Sim2Real transfer of a Reach agent for the open source SO-ARM101 robot. Specifics about that process can be found [here](https://ryan-donald.github.io/portfolio/1-PPO_Sim2Real/), and my script can be found [here](https://github.com/ryan-donald/so101_ppo).
 
-![sim2real](images/so101_reach_sim2real.gif)
+<div align="center">
+  <video src="https://github.com/ryan-donald/ppo/raw/refs/heads/main/images/so101_reach_sim2real.mp4" width="100%" controls>
+  </video>
+</div>
 
 # Script Structure
 The main structure of this repository is as follows:  
