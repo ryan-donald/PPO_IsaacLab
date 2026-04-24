@@ -30,7 +30,7 @@ This implementation supports parameter sweeping via Weights and Biases. To do th
 ## Sim2Real
 Using this package, I have been able to perform Sim2Real transfer of a Reach agent for the open source SO-ARM101 robot. Specifics about that process can be found [here](https://ryan-donald.github.io/portfolio/1-PPO_Sim2Real/), and my script can be found [here](https://github.com/ryan-donald/so101_ppo).
 
-https://github.com/user-attachments/assets/89a71adc-3449-435e-95b9-0e23f8e4bd59
+https://github.com/user-attachments/assets/05b79426-c632-4059-a94b-402b9918e99a
 
 # Script Structure
 The main structure of this repository is as follows:  
