@@ -4,8 +4,7 @@
 This is a repository containing my implementation of the Proximal Policy Optimizatino (PPO) Reinforcement Learning algorithm, specifically for use in Nvidia's IsaacLab. I initially developed and tested this algorithm within gymnasium, and then moved to IsaacLab. The base algorithm is not specific to the environment, and will work with any environment as long as the batch data is in the expected format.
 
 <div align="center">
-  <video src="https://github.com/ryan-donald/ppo/raw/main/images/so101_reach_sim.mp4" width="100%" controls>
-  </video>
+  <video src="images/so101_reach_sim.mp4" width="100%" controls>
 </div>
 
 # Quickstart
@@ -34,8 +33,7 @@ This implementation supports parameter sweeping via Weights and Biases. To do th
 Using this package, I have been able to perform Sim2Real transfer of a Reach agent for the open source SO-ARM101 robot. Specifics about that process can be found [here](https://ryan-donald.github.io/portfolio/1-PPO_Sim2Real/), and my script can be found [here](https://github.com/ryan-donald/so101_ppo).
 
 <div align="center">
-  <video src="https://github.com/ryan-donald/ppo/raw/main/images/so101_reach_sim2real.mp4" width="100%" controls>
-  </video>
+  <video src="images/so101_reach_sim2real.mp4" width="100%" controls>
 </div>
 
 # Script Structure
