@@ -1,5 +1,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=fff)](https://docs.python.org/3/whatsnew/3.11.html)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.7-ee4c2c?logo=pytorch&logoColor=white)](https://github.com/pytorch/pytorch/releases/tag/v2.7.0)
+![Tests](https://github.com/ryan-donald/ppo/actions/workflows/tests.yaml/badge.svg)
+
 # PPO for IsaacLab
 This is a repository containing my implementation of the Proximal Policy Optimizatino (PPO) Reinforcement Learning algorithm, specifically for use in Nvidia's IsaacLab. I initially developed and tested this algorithm within gymnasium, and then moved to IsaacLab. The base algorithm is not specific to the environment, and will work with any environment as long as the batch data is in the expected format.
 
