@@ -2,9 +2,6 @@ import argparse
 from isaaclab.app import AppLauncher
 
 def train(args_cli):
-
-
-
     # launch omniverse app
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
@@ -19,7 +16,7 @@ def train(args_cli):
     import numpy as np
     import random
     from datetime import datetime
-
+    import configparser
     import os
     import wandb
 
@@ -52,30 +49,37 @@ def train(args_cli):
     env.reset()
 
     # get environment-specific training configuration
-    env_config = EnvConfig(args_cli)
-    print("AAAAAA")
+    # env_config = EnvConfig(args_cli)
+    env_config = configparser.ConfigParser()
+    env_config.read(get_cfg_path(args_cli.task))
+
     run_id = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     wandb.init(project="PPO IsaacLab", name=f'{args_cli.task}_{run_id}')
+
+    learning_rate = float(env_config['train']['learning_rate'])
+    gamma = float(env_config['train']['gamma'])
+    num_learning_epochs = int(env_config['train']['num_learning_epochs'])
+    desired_kl = float(env_config['train']['gamma'])
+    clip_epsilon = float(env_config['train']['gamma'])
 
     if args_cli.sweep:
 
         if 'lr' in wandb.config:
-            env_config.lr = wandb.config.lr
+            learning_rate = wandb.config.lr
         if 'entropy_coef' in wandb.config:
-            env_config.entropy_coef = wandb.config.entropy_coef
+            entropy_coef = wandb.config.entropy_coef
         if 'gamma' in wandb.config:
-            env_config.gamma = wandb.config.gamma
+            gamma = wandb.config.gamma
         if 'num_learning_epochs' in wandb.config:
-            env_config.num_learning_epochs = wandb.config.num_learning_epochs
+            num_learning_epochs = wandb.config.num_learning_epochs
         if 'desired_kl' in wandb.config:
-            env_config.desired_kl = wandb.config.desired_kl
+            desired_kl = wandb.config.desired_kl
         if 'clip_epsilon' in wandb.config:
-            env_config.clip_epsilon = wandb.config.clip_epsilon
+            clip_epsilon = wandb.config.clip_epsilon
 
-    num_steps_per_env = env_config.num_steps_per_env
-    num_mini_batches = env_config.num_mini_batches
-    num_learning_epochs = env_config.num_learning_epochs
-    max_iterations = env_config.max_iterations
+    num_steps_per_env = int(env_config['train']['num_steps_per_env'])
+    num_mini_batches = int(env_config['train']['num_mini_batches'])
+    max_iterations = int(env_config['train']['max_iterations'])
 
 
     # store state and action dimensions
@@ -85,21 +89,24 @@ def train(args_cli):
         state_dim = env.observation_space.shape[1]
     action_dim = env.action_space.shape[1]
 
+    hidden_dims = env_config['policy']['hidden_dims']
+    hidden_dims = [int(x) for x in hidden_dims.split(',')]
+
     # initialize PPO agent
     agent = PPOAgent(
         state_dim,
         action_dim,
         device=device,
-        lr=env_config.lr,
-        gamma=env_config.gamma,
-        hidden_dims=env_config.hidden_dims,
-        gae_lambda=env_config.gae_lambda,
-        value_coef=env_config.value_coef,
-        clip_epsilon=env_config.clip_epsilon,
-        max_grad_norm=env_config.max_grad_norm,
-        desired_kl=env_config.desired_kl,
-        schedule_type=env_config.schedule_type,
-        entropy_coef=env_config.entropy_coef
+        lr=learning_rate,
+        gamma=gamma,
+        hidden_dims=hidden_dims,
+        gae_lambda=float(env_config['train']['gae_lambda']),
+        value_coef=float(env_config['train']['value_coef']),
+        clip_epsilon=clip_epsilon,
+        max_grad_norm=float(env_config['train']['max_grad_norm']),
+        desired_kl=desired_kl,
+        schedule_type=env_config['train']['schedule_type'],
+        entropy_coef=float(env_config['train']['entropy_coef'])
     )
 
     # reset environment
@@ -180,7 +187,7 @@ def train(args_cli):
                 state_obs = state
 
             # update normalization statistics
-            if env_config.use_normalization:
+            if env_config['train']['use_normalization'] == "True":
                 agent.actor.update_normalization(state_obs)
                 agent.critic.update_normalization(state_obs)
 
@@ -331,6 +338,16 @@ def train(args_cli):
     # if episode_rewards:
     #     print(
     #         f"Final average reward (last 100 episodes): {np.mean(episode_rewards[-100:]):.2f}")
+
+def get_cfg_path(task):
+    from pathlib import Path
+    current_file_path = Path(__file__).resolve()
+    project_root = current_file_path.parents[3] 
+    ini_file_path = project_root / 'cfg' / f'{args_cli.task}.ini'
+    if not ini_file_path.exists():
+        raise FileNotFoundError(f"Configuration file not found at: {ini_file_path}")
+    
+    return ini_file_path
 
 if __name__ == "__main__":
 
