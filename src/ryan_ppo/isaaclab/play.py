@@ -69,17 +69,6 @@ def play(args_cli):
         )
     env.reset()
 
-
-    # get world positions of links using correct API
-    robot = env.unwrapped.scene["robot"]
-    body_names = robot.data.body_names
-    gripper_idx = body_names.index("gripper_frame_link")
-    base_idx = body_names.index("base_link")
-    gripper_pos = robot.data.body_pos_w[0, gripper_idx]
-    base_pos = robot.data.body_pos_w[0, base_idx]
-    relative_pos = gripper_pos - base_pos
-    print("Gripper position relative to base_link (meters):", relative_pos)
-
     # get environment-specific training configuration
     # env_config = EnvConfig(args_cli)
     env_config = configparser.ConfigParser()
@@ -222,7 +211,6 @@ def get_cfg_path(task):
 
 if __name__ == "__main__":
 
-    # add argparse arguments
     # add argparse arguments
     parser = argparse.ArgumentParser(description="PPO agent evaluation for IsaacLab environments.")
     parser.add_argument("--checkpoint", type=str, default=None, help="checkpoint file for actor network.")

@@ -7,6 +7,8 @@ import torch.optim as optim
 
 import numpy as np
 
+from rsl_rl.modules import EmpiricalNormalization
+
 from ryan_ppo.network import Actor, Critic
 
 
@@ -28,10 +30,13 @@ class PPOAgent:
                  entropy_coef: float = 0.001,
                  use_normalization: bool = True) -> None:
 
+        if use_normalization:
+            self.obs_normalizer = EmpiricalNormalization(state_dim)
+
         # initialization of networks and optimizer
         self.device = device
-        self.actor = Actor(state_dim, action_dim, hidden_dims).to(device)
-        self.critic = Critic(state_dim, hidden_dims).to(device)
+        self.actor = Actor(state_dim, action_dim, hidden_dims, self.obs_normalizer).to(device)
+        self.critic = Critic(state_dim, hidden_dims, self.obs_normalizer).to(device)
         self.optimizer = optim.Adam(
             list(self.actor.parameters()) + list(self.critic.parameters()), lr=lr)
 
@@ -93,8 +98,8 @@ class PPOAgent:
 
         returns = advantages + values
 
-        advantages = (advantages - advantages.mean()) / \
-            (advantages.std() + 1e-8)
+        # advantages = (advantages - advantages.mean()) / \
+        #     (advantages.std() + 1e-8)
 
         return advantages, returns
 
@@ -132,8 +137,8 @@ class PPOAgent:
         for epoch in range(epochs):
 
             # early stopping for KL divergence
-            if stop_early:
-                break
+            # if stop_early:
+            #     break
 
             # randomizes batch data
             indices = np.random.permutation(dataset_size)
@@ -151,6 +156,9 @@ class PPOAgent:
                 batch_values_old = b_values_old[batch_indices]
                 batch_mus_old = b_mus_old[batch_indices]
                 batch_stds_old = b_stds_old[batch_indices]
+
+                batch_advantages = (batch_advantages - batch_advantages.mean()) / \
+                (batch_advantages.std() + 1e-8)
 
                 # calculate log_probs for current policy
                 mu, std = self.actor(batch_states)
@@ -173,11 +181,19 @@ class PPOAgent:
                     mean_kl += batch_kl
                     num_updates += 1
 
+                    if self.schedule_type == "adaptive":
+                        if batch_kl > self.desired_kl * 2.0:
+                            self.current_lr = max(1e-5, self.current_lr / 1.5)
+                        elif batch_kl < self.desired_kl / 2.0 and batch_kl > 0.0:
+                            self.current_lr = min(1e-2, self.current_lr * 1.5)
+                        for param_group in self.optimizer.param_groups:
+                            param_group['lr'] = self.current_lr
+
                     # early stopping: if KL has already exceeded the threshold, skip
                     # remaining mini-batches and epochs to avoid over-updating the policy
-                    if batch_kl > self.desired_kl * 2.0:
-                        stop_early = True
-                        break
+                    # if batch_kl > self.desired_kl * 2.0:
+                    #     # stop_early = True
+                    #     continue
 
                 # compute surrogate loss
                 ratios = torch.exp(log_probs - batch_log_probs_old)
@@ -216,12 +232,5 @@ class PPOAgent:
         # average KL divergence over all updates, adjust learning rate if using adaptive schedule
         mean_kl = mean_kl / num_updates if num_updates > 0 else 0
         self.update_count += 1
-        if self.schedule_type == "adaptive":
-            if mean_kl > self.desired_kl * 2.0:
-                self.current_lr = max(1e-5, self.current_lr / 1.5)
-            elif mean_kl < self.desired_kl / 2.0 and mean_kl > 0.0:
-                self.current_lr = min(1e-2, self.current_lr * 1.5)
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = self.current_lr
 
         return mean_kl

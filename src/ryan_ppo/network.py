@@ -15,13 +15,14 @@ class Actor(nn.Module):
                  state_dim: int,
                  action_dim: int,
                  hidden_dims: list[int] = [64, 64],
-                 use_normalization: bool = True,
-                 std: float = 0.3) -> None:
+                 normalization_object: EmpiricalNormalization = None,
+                 std: float = 1.0) -> None:
         super(Actor, self).__init__()
 
-        self.use_normalization = use_normalization
-        if use_normalization:
-            self.obs_normalizer = EmpiricalNormalization(state_dim)
+        if normalization_object:
+            self.obs_normalizer = normalization_object
+        else:
+            self.obs_normalizer = None
 
         layers = []
         prev_dim = state_dim
@@ -47,7 +48,7 @@ class Actor(nn.Module):
 
     def forward(self, x: torch.tensor) -> tuple[torch.tensor, torch.tensor]:
         # normalize observations, then forward pass
-        if self.use_normalization:
+        if self.obs_normalizer:
             x = self.obs_normalizer(x)
 
         for layer in self.hidden_layers:
@@ -58,7 +59,7 @@ class Actor(nn.Module):
 
     def update_normalization(self, obs: torch.tensor) -> None:
         # update observation normalization statistics
-        if self.use_normalization:
+        if self.obs_normalizer:
             self.obs_normalizer.update(obs)
 
 
@@ -67,12 +68,13 @@ class Critic(nn.Module):
     def __init__(self,
                  state_dim: int,
                  hidden_dims: list[int] = [64, 64],
-                 use_normalization: bool = True) -> None:
+                 normalization_object: EmpiricalNormalization = None) -> None:
         super(Critic, self).__init__()
 
-        self.use_normalization = use_normalization
-        if use_normalization:
-            self.obs_normalizer = EmpiricalNormalization(state_dim)
+        if normalization_object:
+            self.obs_normalizer = normalization_object
+        else:
+            self.obs_normalizer = None
 
         layers = []
         prev_dim = state_dim
@@ -96,7 +98,7 @@ class Critic(nn.Module):
                 nn.init.constant_(module.bias, 0.0)
 
     def forward(self, x: torch.tensor) -> torch.tensor:
-        if self.use_normalization:
+        if self.obs_normalizer:
             x = self.obs_normalizer(x)
 
         for layer in self.hidden_layers:
@@ -106,5 +108,5 @@ class Critic(nn.Module):
 
     def update_normalization(self, obs: torch.tensor) -> None:
         # update observation normalization statistics
-        if self.use_normalization:
+        if self.obs_normalizer:
             self.obs_normalizer.update(obs)

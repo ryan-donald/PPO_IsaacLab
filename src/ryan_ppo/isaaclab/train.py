@@ -59,8 +59,8 @@ def train(args_cli):
     learning_rate = float(env_config['train']['learning_rate'])
     gamma = float(env_config['train']['gamma'])
     num_learning_epochs = int(env_config['train']['num_learning_epochs'])
-    desired_kl = float(env_config['train']['gamma'])
-    clip_epsilon = float(env_config['train']['gamma'])
+    desired_kl = float(env_config['train']['desired_kl'])
+    clip_epsilon = float(env_config['train']['clip_epsilon'])
 
     if args_cli.sweep:
 
@@ -202,6 +202,8 @@ def train(args_cli):
             # take step in environment
             next_state, reward, terminated, truncated, info = env.step(action)
             done = torch.logical_or(terminated, truncated)
+            
+            reward = reward + agent.gamma * value * truncated.float()
 
             # store rollout data in tensors
             states[step] = state_obs
@@ -322,22 +324,6 @@ def train(args_cli):
     if (args_cli.save):
         torch.save(agent.actor.state_dict(), log_path + "actor_final.pth")
         torch.save(agent.critic.state_dict(), log_path + "critic_final.pth")
-
-    # # save training data for plotting
-    # np.savez(
-    #     log_path + "training_data.npz",
-    #     timesteps=np.array([x[0] for x in plot_data]),
-    #     avg_rewards=np.array([x[1] for x in plot_data]),
-    #     episode_rewards=np.array(episode_rewards),
-    #     episode_lengths=np.array(episode_lengths),
-    # )
-    # print(f"\n✓ Training data saved to {log_path}training_data.npz")
-
-    # print(f"\nTraining complete! Final model saved.")
-    # print(f"Total episodes: {len(episode_rewards)}")
-    # if episode_rewards:
-    #     print(
-    #         f"Final average reward (last 100 episodes): {np.mean(episode_rewards[-100:]):.2f}")
 
 def get_cfg_path(task):
     from pathlib import Path
