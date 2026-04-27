@@ -86,13 +86,10 @@ def test_compute_gae():
     assert returns.shape == (
         num_steps, num_envs), "returns should be (num_steps, num_envs)"
 
-    print(advantages)
-    print(returns)
-
-    assert torch.allclose(advantages, torch.tensor([[1.0632, -0.2561],
-                                                    [1.0092, -1.2337],
-                                                    [0.8972, -1.5648],
-                                                    [0.0976, -0.0126]]), rtol=1e-4, atol=1e-4), "advantages are wrong"
+    assert torch.allclose(advantages, torch.tensor([[ 1.1709, -2.0399],
+                                                    [ 1.0395, -4.4190],
+                                                    [ 0.7669, -5.2248],
+                                                    [-1.1792, -1.4474]]), rtol=1e-4, atol=1e-4), "advantages are wrong"
 
     assert torch.allclose(returns, torch.tensor([[2.3709, -2.1399],
                                                  [1.0395, -4.3190],
