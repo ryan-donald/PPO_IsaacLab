@@ -2,6 +2,8 @@ program: src/ryan_ppo/isaaclab/train.py
 
 method: bayes
 
+
+
 metric:
   name: train/avg_reward
   goal: maximize
@@ -28,5 +30,5 @@ command:
   - "Ryan-Reach-SO-ARM101-Normalized-v0"
   - "--headless"
   - "--num_envs"
-  - "2048"
+  - "4096"
   - "--sweep"

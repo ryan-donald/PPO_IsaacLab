@@ -1,6 +1,7 @@
 import argparse
 from isaaclab.app import AppLauncher
 
+
 def train(args_cli):
     # launch omniverse app
     app_launcher = AppLauncher(args_cli)
@@ -81,7 +82,6 @@ def train(args_cli):
     num_mini_batches = int(env_config['train']['num_mini_batches'])
     max_iterations = int(env_config['train']['max_iterations'])
 
-
     # store state and action dimensions
     if isinstance(env.observation_space, gym.spaces.Dict):
         state_dim = env.observation_space['policy'].shape[1]
@@ -129,7 +129,6 @@ def train(args_cli):
     # print(f"  Max iterations: {max_iterations}")
     # print(f"  Total timesteps: {max_iterations * steps_per_rollout:,}")
 
-
     # logging and checkpointing
     log_path = f"ppo_logs/{args_cli.task}/{run_id}/"
     os.makedirs(log_path, exist_ok=True)
@@ -149,12 +148,8 @@ def train(args_cli):
     # print("\nStarting training...\n")
 
     # storage for episode rewards and lengths, and other plotting data
-    episode_rewards = []
-    episode_lengths = []
     current_episode_rewards = torch.zeros(num_envs, device=device)
     current_episode_lengths = torch.zeros(num_envs, device=device)
-    plot_data = []
-    reward_steps = []
 
     # per-term reward logging
     reward_manager = env.unwrapped.reward_manager
@@ -166,10 +161,17 @@ def train(args_cli):
                             for name in term_names}   # completed episode sums
     # print(f"Logging {num_terms} reward terms: {term_names}")
 
+    # Track last known metrics for forward-filling when rollouts have zero completed episodes
+    last_avg_reward = 0.0
+    last_min_reward = 0.0
+    last_max_reward = 0.0
+    last_std_reward = 0.0
+    last_term_rewards = {name: 0.0 for name in term_names}
+
     for update in range(max_iterations):
         states = torch.zeros((num_steps, num_envs, state_dim)).to(device)
         actions = torch.zeros((num_steps, num_envs, action_dim),
-                            dtype=torch.float).to(device)
+                              dtype=torch.float).to(device)
         log_probs = torch.zeros((num_steps, num_envs)).to(device)
         rewards = torch.zeros((num_steps, num_envs)).to(device)
         dones = torch.zeros((num_steps, num_envs)).to(device)
@@ -177,6 +179,10 @@ def train(args_cli):
         entropies = torch.zeros((num_steps, num_envs)).to(device)
         mus = torch.zeros((num_steps, num_envs, action_dim)).to(device)
         stds = torch.zeros((num_steps, num_envs, action_dim)).to(device)
+
+        episode_rewards = []
+        episode_lengths = []
+        episode_term_rewards = {name: [] for name in term_names}
 
         for step in range(num_steps):
             # handle both Dict and Box observation spaces
@@ -202,7 +208,7 @@ def train(args_cli):
             # take step in environment
             next_state, reward, terminated, truncated, info = env.step(action)
             done = torch.logical_or(terminated, truncated)
-            
+
             reward = reward + agent.gamma * value * truncated.float()
 
             # store rollout data in tensors
@@ -232,8 +238,10 @@ def train(args_cli):
                 completed_rewards = current_episode_rewards[episode_done_mask]
                 completed_lengths = current_episode_lengths[episode_done_mask]
 
-                episode_rewards.extend(completed_rewards.cpu().numpy().tolist())
-                episode_lengths.extend(completed_lengths.cpu().numpy().tolist())
+                episode_rewards.extend(
+                    completed_rewards.cpu().numpy().tolist())
+                episode_lengths.extend(
+                    completed_lengths.cpu().numpy().tolist())
 
                 current_episode_rewards[episode_done_mask] = 0
                 current_episode_lengths[episode_done_mask] = 0
@@ -256,40 +264,55 @@ def train(args_cli):
             next_value = agent.critic(next_state_obs).squeeze()
 
         # compute GAE advantages and returns
-        advantages, returns = agent.compute_gae(rewards, values, dones, next_value)
+        advantages, returns = agent.compute_gae(
+            rewards, values, dones, next_value)
 
         # update actor and critic networks
         mean_kl = agent.update(states, actions, log_probs, returns, advantages,
-                            values, mus, stds, epochs=num_learning_epochs, batch_size=batch_size)
+                               values, mus, stds, epochs=num_learning_epochs, batch_size=batch_size)
 
         # logging
-        avg_reward = np.mean(episode_rewards[-100:]) if len(
-            episode_rewards) >= 100 else np.mean(episode_rewards) if episode_rewards else 0.0
+        if episode_rewards:
+            avg_reward = np.mean(episode_rewards)
+            min_reward = np.min(episode_rewards)
+            max_reward = np.max(episode_rewards)
+            std_reward = np.std(episode_rewards) if len(
+                episode_rewards) > 1 else 0.0
 
-        # save data for plotting (timestep, average_reward)
-        current_timestep = (update + 1) * steps_per_rollout
-        plot_data.append((current_timestep, avg_reward))
+            # update trackers
+            last_avg_reward = avg_reward
+            last_min_reward = min_reward
+            last_max_reward = max_reward
+            last_std_reward = std_reward
+        else:
+            # forward-fill
+            avg_reward = last_avg_reward
+            min_reward = last_min_reward
+            max_reward = last_max_reward
+            std_reward = last_std_reward
 
-        # logging every update — tensorboard, print every 10
-        recent_rewards = episode_rewards[-100:] if len(
-            episode_rewards) >= 100 else episode_rewards
-        min_reward = np.min(recent_rewards) if recent_rewards else 0
-        max_reward = np.max(recent_rewards) if recent_rewards else 0
-        std_reward = np.std(recent_rewards) if len(recent_rewards) > 1 else 0
-
-        wandb.log({"train/avg_reward": avg_reward})
-        wandb.log({"train/min_reward": min_reward})
-        wandb.log({"train/max_reward": max_reward})
-        wandb.log({"train/std_reward": std_reward})
-        wandb.log({"train/kl": mean_kl})
-        wandb.log({"train/lr": agent.current_lr})
-        wandb.log({"train/episodes": len(episode_rewards)})
+        logging_dict = {
+            "train/avg_reward": avg_reward,
+            "train/min_reward": min_reward,
+            "train/max_reward": max_reward,
+            "train/std_reward": std_reward,
+            "train/kl": mean_kl,
+            "train/lr": agent.current_lr,
+            "train/episodes": len(episode_rewards)
+        }
 
         for t_name in term_names:
-            recent_term = episode_term_rewards[t_name][-100:] if len(
-                episode_term_rewards[t_name]) >= 100 else episode_term_rewards[t_name]
-            avg_term = np.mean(recent_term) if recent_term else 0.0
-            wandb.log({f"rewards/{t_name}": avg_term})
+            if episode_term_rewards[t_name]:
+                # calculate mean and update tracker
+                avg_term = np.mean(episode_term_rewards[t_name])
+                last_term_rewards[t_name] = avg_term
+            else:
+                # forward-fill
+                avg_term = last_term_rewards[t_name]
+
+            logging_dict[f"rewards/{t_name}"] = avg_term
+
+        wandb.log(logging_dict, step=update)
 
         # if (update + 1) % 10 == 0:
         #     print(f"Update {update + 1}/{max_iterations} | "
@@ -304,16 +327,19 @@ def train(args_cli):
         if (args_cli.save):
             if len(episode_rewards) >= 100 and avg_reward > curr_max:
                 curr_max = avg_reward
-                torch.save(agent.actor.state_dict(), log_path + "actor_best.pth")
-                torch.save(agent.critic.state_dict(), log_path + "critic_best.pth")
-                print(f"New best model saved with average reward: {curr_max:.2f}")
+                torch.save(agent.actor.state_dict(),
+                           log_path + "actor_best.pth")
+                torch.save(agent.critic.state_dict(),
+                           log_path + "critic_best.pth")
+                print(
+                    f"New best model saved with average reward: {curr_max:.2f}")
 
             # save checkpoint every 100 iterations
             if (update + 1) % 100 == 0:
                 torch.save(agent.actor.state_dict(), log_path +
-                        f"actor_iter_{update+1}.pth")
+                           f"actor_iter_{update+1}.pth")
                 torch.save(agent.critic.state_dict(), log_path +
-                        f"critic_iter_{update+1}.pth")
+                           f"critic_iter_{update+1}.pth")
                 print(f"Checkpoint saved at iteration {update+1}")
 
     env.close()
@@ -325,25 +351,33 @@ def train(args_cli):
         torch.save(agent.actor.state_dict(), log_path + "actor_final.pth")
         torch.save(agent.critic.state_dict(), log_path + "critic_final.pth")
 
+
 def get_cfg_path(task):
     from pathlib import Path
     current_file_path = Path(__file__).resolve()
-    project_root = current_file_path.parents[3] 
+    project_root = current_file_path.parents[3]
     ini_file_path = project_root / 'cfg' / f'{args_cli.task}.ini'
     if not ini_file_path.exists():
-        raise FileNotFoundError(f"Configuration file not found at: {ini_file_path}")
-    
+        raise FileNotFoundError(
+            f"Configuration file not found at: {ini_file_path}")
+
     return ini_file_path
+
 
 if __name__ == "__main__":
 
     # add argparse arguments
-    parser = argparse.ArgumentParser(description="Random agent for Isaac Lab environments.")
-    parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
-    parser.add_argument("--task", type=str, default=None, help="Name of the task.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
-    parser.add_argument("--sweep", action="store_true", help="Enable WandB parameter sweeping.")
-    parser.add_argument("--save", action="store_true", help="Enable saving of agents (Policy and Value networks)" \
+    parser = argparse.ArgumentParser(
+        description="Random agent for Isaac Lab environments.")
+    parser.add_argument("--num_envs", type=int, default=None,
+                        help="Number of environments to simulate.")
+    parser.add_argument("--task", type=str, default=None,
+                        help="Name of the task.")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility.")
+    parser.add_argument("--sweep", action="store_true",
+                        help="Enable WandB parameter sweeping.")
+    parser.add_argument("--save", action="store_true", help="Enable saving of agents (Policy and Value networks)"
                                                             "every 100 updates, new best performance, and at the end")
 
     # append AppLauncher cli args
