@@ -1,6 +1,10 @@
 [project]
-name = "ppo"
+name = "ryan-ppo"
 version = "0.1.0"
+authors = [
+  { name="Ryan Donald" }
+]
+requires-python = ">=3.10"
 
 [tool.ruff]
 line-length = 88
