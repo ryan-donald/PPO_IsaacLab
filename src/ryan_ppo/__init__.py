@@ -1,1 +1,1 @@
-__author__="Ryan Donald"
+__author__ = "Ryan Donald"

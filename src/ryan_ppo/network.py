@@ -1,22 +1,21 @@
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-import numpy as np
-
 from rsl_rl.modules import EmpiricalNormalization
 
 
 class Actor(nn.Module):
-
-    def __init__(self,
-                 state_dim: int,
-                 action_dim: int,
-                 hidden_dims: list[int] = [64, 64],
-                 normalization_object: EmpiricalNormalization = None,
-                 std: float = 1.0) -> None:
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        hidden_dims: list[int] = [64, 64],
+        normalization_object: EmpiricalNormalization = None,
+        std: float = 1.0,
+    ) -> None:
         super(Actor, self).__init__()
 
         if normalization_object:
@@ -64,11 +63,12 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-
-    def __init__(self,
-                 state_dim: int,
-                 hidden_dims: list[int] = [64, 64],
-                 normalization_object: EmpiricalNormalization = None) -> None:
+    def __init__(
+        self,
+        state_dim: int,
+        hidden_dims: list[int] = [64, 64],
+        normalization_object: EmpiricalNormalization = None,
+    ) -> None:
         super(Critic, self).__init__()
 
         if normalization_object:

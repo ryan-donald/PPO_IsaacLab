@@ -1,6 +1,6 @@
-import pytest
 import torch
 import torch.nn as nn
+
 from ryan_ppo.network import Actor, Critic
 
 
@@ -11,8 +11,7 @@ def test_actor_init():
     hidden_dims = [2, 2]
     actor = Actor(state_dim, action_dim, hidden_dims)
 
-    total_params = sum(p.numel()
-                       for p in actor.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in actor.parameters() if p.requires_grad)
     assert total_params > 0
 
 
@@ -33,7 +32,7 @@ def test_actor_forward():
     assert mu.shape == (batch_size, action_dim)
     assert std.shape == (action_dim,)
 
-    assert mu.requires_grad == True
+    assert mu.requires_grad
 
 
 def test_actor_weights_init():
@@ -44,17 +43,22 @@ def test_actor_weights_init():
     actor = Actor(state_dim, action_dim, hidden_dims)
 
     for name, module in actor.named_modules():
-
         if name != "output_layer" and isinstance(module, nn.Linear):
-            assert torch.allclose(torch.linalg.norm(module.weight, ord=2),
-                                  torch.sqrt(torch.tensor(2)),
-                                  rtol=1e-4, atol=1e-4)
+            assert torch.allclose(
+                torch.linalg.norm(module.weight, ord=2),
+                torch.sqrt(torch.tensor(2)),
+                rtol=1e-4,
+                atol=1e-4,
+            )
             assert torch.allclose(module.bias, torch.zeros_like(module.bias))
 
         elif name == "output_layer" and isinstance(module, nn.Linear):
-            assert torch.allclose(torch.linalg.norm(module.weight, ord=2),
-                                  torch.tensor(0.01),
-                                  rtol=1e-4, atol=1e-4)
+            assert torch.allclose(
+                torch.linalg.norm(module.weight, ord=2),
+                torch.tensor(0.01),
+                rtol=1e-4,
+                atol=1e-4,
+            )
             assert torch.allclose(module.bias, torch.zeros_like(module.bias))
 
 
@@ -64,8 +68,7 @@ def test_critic_init():
     hidden_dims = [2, 2]
     critic = Critic(state_dim, hidden_dims)
 
-    total_params = sum(p.numel()
-                       for p in critic.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in critic.parameters() if p.requires_grad)
     assert total_params > 0
 
 
@@ -84,7 +87,7 @@ def test_critic_forward():
 
     assert output.shape == (batch_size, 1)
 
-    assert output.requires_grad == True
+    assert output.requires_grad
 
 
 def test_critic_weights_init():
@@ -95,15 +98,20 @@ def test_critic_weights_init():
     critic = Critic(state_dim, hidden_dims)
 
     for name, module in critic.named_modules():
-
         if name != "output_layer" and isinstance(module, nn.Linear):
-            assert torch.allclose(torch.linalg.norm(module.weight, ord=2),
-                                  torch.sqrt(torch.tensor(2)),
-                                  rtol=1e-4, atol=1e-4)
+            assert torch.allclose(
+                torch.linalg.norm(module.weight, ord=2),
+                torch.sqrt(torch.tensor(2)),
+                rtol=1e-4,
+                atol=1e-4,
+            )
             assert torch.allclose(module.bias, torch.zeros_like(module.bias))
 
         elif name == "output_layer" and isinstance(module, nn.Linear):
-            assert torch.allclose(torch.linalg.norm(module.weight, ord=2),
-                                  torch.tensor(1.0),
-                                  rtol=1e-4, atol=1e-4)
+            assert torch.allclose(
+                torch.linalg.norm(module.weight, ord=2),
+                torch.tensor(1.0),
+                rtol=1e-4,
+                atol=1e-4,
+            )
             assert torch.allclose(module.bias, torch.zeros_like(module.bias))

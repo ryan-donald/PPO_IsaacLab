@@ -1,4 +1,5 @@
 import argparse
+
 from isaaclab.app import AppLauncher
 
 
@@ -7,22 +8,20 @@ def train(args_cli):
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
 
-    import gymnasium as gym
-    import numpy as np
-    import isaaclab_tasks
-    import ryan_tasks
-    from isaaclab_tasks.utils import parse_env_cfg
-
-    import torch
-    import numpy as np
-    import random
-    from datetime import datetime
     import configparser
     import os
-    import wandb
+    import random
+    from datetime import datetime
 
+    import gymnasium as gym
+    import isaaclab_tasks  # noqa: F401
+    import numpy as np
+    import torch
+    import wandb
+    from isaaclab_tasks.utils import parse_env_cfg
+
+    import ryan_tasks  # noqa: F401
     from ryan_ppo.ppo import PPOAgent
-    from ryan_ppo.env_cfgs import EnvConfig
 
     # set device before using it in class instantiation
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -54,43 +53,42 @@ def train(args_cli):
     env_config = configparser.ConfigParser()
     env_config.read(get_cfg_path(args_cli.task))
 
-    run_id = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    wandb.init(project="PPO IsaacLab", name=f'{args_cli.task}_{run_id}')
+    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    wandb.init(project="PPO IsaacLab", name=f"{args_cli.task}_{run_id}")
 
-    learning_rate = float(env_config['train']['learning_rate'])
-    gamma = float(env_config['train']['gamma'])
-    num_learning_epochs = int(env_config['train']['num_learning_epochs'])
-    desired_kl = float(env_config['train']['desired_kl'])
-    clip_epsilon = float(env_config['train']['clip_epsilon'])
+    learning_rate = float(env_config["train"]["learning_rate"])
+    gamma = float(env_config["train"]["gamma"])
+    num_learning_epochs = int(env_config["train"]["num_learning_epochs"])
+    desired_kl = float(env_config["train"]["desired_kl"])
+    clip_epsilon = float(env_config["train"]["clip_epsilon"])
 
     if args_cli.sweep:
-
-        if 'lr' in wandb.config:
+        if "lr" in wandb.config:
             learning_rate = wandb.config.lr
-        if 'entropy_coef' in wandb.config:
-            entropy_coef = wandb.config.entropy_coef
-        if 'gamma' in wandb.config:
+        if "entropy_coef" in wandb.config:
+            pass
+        if "gamma" in wandb.config:
             gamma = wandb.config.gamma
-        if 'num_learning_epochs' in wandb.config:
+        if "num_learning_epochs" in wandb.config:
             num_learning_epochs = wandb.config.num_learning_epochs
-        if 'desired_kl' in wandb.config:
+        if "desired_kl" in wandb.config:
             desired_kl = wandb.config.desired_kl
-        if 'clip_epsilon' in wandb.config:
+        if "clip_epsilon" in wandb.config:
             clip_epsilon = wandb.config.clip_epsilon
 
-    num_steps_per_env = int(env_config['train']['num_steps_per_env'])
-    num_mini_batches = int(env_config['train']['num_mini_batches'])
-    max_iterations = int(env_config['train']['max_iterations'])
+    num_steps_per_env = int(env_config["train"]["num_steps_per_env"])
+    num_mini_batches = int(env_config["train"]["num_mini_batches"])
+    max_iterations = int(env_config["train"]["max_iterations"])
 
     # store state and action dimensions
     if isinstance(env.observation_space, gym.spaces.Dict):
-        state_dim = env.observation_space['policy'].shape[1]
+        state_dim = env.observation_space["policy"].shape[1]
     else:
         state_dim = env.observation_space.shape[1]
     action_dim = env.action_space.shape[1]
 
-    hidden_dims = env_config['policy']['hidden_dims']
-    hidden_dims = [int(x) for x in hidden_dims.split(',')]
+    hidden_dims = env_config["policy"]["hidden_dims"]
+    hidden_dims = [int(x) for x in hidden_dims.split(",")]
 
     # initialize PPO agent
     agent = PPOAgent(
@@ -100,13 +98,13 @@ def train(args_cli):
         lr=learning_rate,
         gamma=gamma,
         hidden_dims=hidden_dims,
-        gae_lambda=float(env_config['train']['gae_lambda']),
-        value_coef=float(env_config['train']['value_coef']),
+        gae_lambda=float(env_config["train"]["gae_lambda"]),
+        value_coef=float(env_config["train"]["value_coef"]),
         clip_epsilon=clip_epsilon,
-        max_grad_norm=float(env_config['train']['max_grad_norm']),
+        max_grad_norm=float(env_config["train"]["max_grad_norm"]),
         desired_kl=desired_kl,
-        schedule_type=env_config['train']['schedule_type'],
-        entropy_coef=float(env_config['train']['entropy_coef'])
+        schedule_type=env_config["train"]["schedule_type"],
+        entropy_coef=float(env_config["train"]["entropy_coef"]),
     )
 
     # reset environment
@@ -116,7 +114,7 @@ def train(args_cli):
     steps_per_rollout = num_steps_per_env * num_envs  # 24 * num_envs
     batch_size = steps_per_rollout // num_mini_batches
     num_steps = num_steps_per_env
-    curr_max = -float('inf')
+    curr_max = -float("inf")
 
     # print training configuration
     # print(f"Training configuration:")
@@ -132,9 +130,8 @@ def train(args_cli):
     # logging and checkpointing
     log_path = f"ppo_logs/{args_cli.task}/{run_id}/"
     os.makedirs(log_path, exist_ok=True)
-    checkpoint_path = log_path + "actor_final.pth"
+    log_path + "actor_final.pth"
 
-    start_iteration = 0
     # if os.path.exists(checkpoint_path):
     #     print(f"\nFound existing checkpoint: {checkpoint_path}")
     #     response = input("Load and continue training? (y/N): ")
@@ -156,12 +153,13 @@ def train(args_cli):
     term_names = reward_manager.active_terms
     num_terms = len(term_names)
     current_term_rewards = torch.zeros(
-        num_envs, num_terms, device=device)  # accumulator per env
-    episode_term_rewards = {name: []
-                            for name in term_names}   # completed episode sums
+        num_envs, num_terms, device=device
+    )  # accumulator per env
+    episode_term_rewards = {name: [] for name in term_names}  # completed episode sums
     # print(f"Logging {num_terms} reward terms: {term_names}")
 
-    # Track last known metrics for forward-filling when rollouts have zero completed episodes
+    # Track last known metrics for forward-filling when
+    # rollouts have zero completed episodes
     last_avg_reward = 0.0
     last_min_reward = 0.0
     last_max_reward = 0.0
@@ -170,8 +168,9 @@ def train(args_cli):
 
     for update in range(max_iterations):
         states = torch.zeros((num_steps, num_envs, state_dim)).to(device)
-        actions = torch.zeros((num_steps, num_envs, action_dim),
-                              dtype=torch.float).to(device)
+        actions = torch.zeros((num_steps, num_envs, action_dim), dtype=torch.float).to(
+            device
+        )
         log_probs = torch.zeros((num_steps, num_envs)).to(device)
         rewards = torch.zeros((num_steps, num_envs)).to(device)
         dones = torch.zeros((num_steps, num_envs)).to(device)
@@ -187,13 +186,16 @@ def train(args_cli):
         for step in range(num_steps):
             # handle both Dict and Box observation spaces
             if isinstance(state, dict):
-                state_obs = state['policy'] if 'policy' in state else state[list(state.keys())[
-                    0]]
+                state_obs = (
+                    state["policy"]
+                    if "policy" in state
+                    else state[list(state.keys())[0]]
+                )
             else:
                 state_obs = state
 
             # update normalization statistics
-            if env_config['train']['use_normalization'] == "True":
+            if env_config["train"]["use_normalization"] == "True":
                 agent.actor.update_normalization(state_obs)
                 agent.critic.update_normalization(state_obs)
 
@@ -238,10 +240,8 @@ def train(args_cli):
                 completed_rewards = current_episode_rewards[episode_done_mask]
                 completed_lengths = current_episode_lengths[episode_done_mask]
 
-                episode_rewards.extend(
-                    completed_rewards.cpu().numpy().tolist())
-                episode_lengths.extend(
-                    completed_lengths.cpu().numpy().tolist())
+                episode_rewards.extend(completed_rewards.cpu().numpy().tolist())
+                episode_lengths.extend(completed_lengths.cpu().numpy().tolist())
 
                 current_episode_rewards[episode_done_mask] = 0
                 current_episode_lengths[episode_done_mask] = 0
@@ -250,34 +250,46 @@ def train(args_cli):
                 for t_idx, t_name in enumerate(term_names):
                     completed_term = current_term_rewards[episode_done_mask, t_idx]
                     episode_term_rewards[t_name].extend(
-                        completed_term.cpu().numpy().tolist())
+                        completed_term.cpu().numpy().tolist()
+                    )
                 current_term_rewards[episode_done_mask] = 0
 
         # bootstrap next value for GAE
         with torch.no_grad():
             if isinstance(state, dict):
-                next_state_obs = state['policy'] if 'policy' in state else state[list(state.keys())[
-                    0]]
+                next_state_obs = (
+                    state["policy"]
+                    if "policy" in state
+                    else state[list(state.keys())[0]]
+                )
             else:
                 next_state_obs = state
 
             next_value = agent.critic(next_state_obs).squeeze()
 
         # compute GAE advantages and returns
-        advantages, returns = agent.compute_gae(
-            rewards, values, dones, next_value)
+        advantages, returns = agent.compute_gae(rewards, values, dones, next_value)
 
         # update actor and critic networks
-        mean_kl = agent.update(states, actions, log_probs, returns, advantages,
-                               values, mus, stds, epochs=num_learning_epochs, batch_size=batch_size)
+        mean_kl = agent.update(
+            states,
+            actions,
+            log_probs,
+            returns,
+            advantages,
+            values,
+            mus,
+            stds,
+            epochs=num_learning_epochs,
+            batch_size=batch_size,
+        )
 
         # logging
         if episode_rewards:
             avg_reward = np.mean(episode_rewards)
             min_reward = np.min(episode_rewards)
             max_reward = np.max(episode_rewards)
-            std_reward = np.std(episode_rewards) if len(
-                episode_rewards) > 1 else 0.0
+            std_reward = np.std(episode_rewards) if len(episode_rewards) > 1 else 0.0
 
             # update trackers
             last_avg_reward = avg_reward
@@ -298,7 +310,7 @@ def train(args_cli):
             "train/std_reward": std_reward,
             "train/kl": mean_kl,
             "train/lr": agent.current_lr,
-            "train/episodes": len(episode_rewards)
+            "train/episodes": len(episode_rewards),
         }
 
         for t_name in term_names:
@@ -324,61 +336,67 @@ def train(args_cli):
         #         f"Steps: {(update + 1) * steps_per_rollout:,}")
 
         # save best model when reward improves
-        if (args_cli.save):
+        if args_cli.save:
             if len(episode_rewards) >= 100 and avg_reward > curr_max:
                 curr_max = avg_reward
-                torch.save(agent.actor.state_dict(),
-                           log_path + "actor_best.pth")
-                torch.save(agent.critic.state_dict(),
-                           log_path + "critic_best.pth")
-                print(
-                    f"New best model saved with average reward: {curr_max:.2f}")
+                torch.save(agent.actor.state_dict(), log_path + "actor_best.pth")
+                torch.save(agent.critic.state_dict(), log_path + "critic_best.pth")
+                print(f"New best model saved with average reward: {curr_max:.2f}")
 
             # save checkpoint every 100 iterations
             if (update + 1) % 100 == 0:
-                torch.save(agent.actor.state_dict(), log_path +
-                           f"actor_iter_{update+1}.pth")
-                torch.save(agent.critic.state_dict(), log_path +
-                           f"critic_iter_{update+1}.pth")
-                print(f"Checkpoint saved at iteration {update+1}")
+                torch.save(
+                    agent.actor.state_dict(), log_path + f"actor_iter_{update + 1}.pth"
+                )
+                torch.save(
+                    agent.critic.state_dict(),
+                    log_path + f"critic_iter_{update + 1}.pth",
+                )
+                print(f"Checkpoint saved at iteration {update + 1}")
 
     env.close()
     wandb.finish()
     simulation_app.close()
 
     # save final model
-    if (args_cli.save):
+    if args_cli.save:
         torch.save(agent.actor.state_dict(), log_path + "actor_final.pth")
         torch.save(agent.critic.state_dict(), log_path + "critic_final.pth")
 
 
 def get_cfg_path(task):
     from pathlib import Path
+
     current_file_path = Path(__file__).resolve()
     project_root = current_file_path.parents[3]
-    ini_file_path = project_root / 'cfg' / f'{args_cli.task}.ini'
+    ini_file_path = project_root / "cfg" / f"{args_cli.task}.ini"
     if not ini_file_path.exists():
-        raise FileNotFoundError(
-            f"Configuration file not found at: {ini_file_path}")
+        raise FileNotFoundError(f"Configuration file not found at: {ini_file_path}")
 
     return ini_file_path
 
 
 if __name__ == "__main__":
-
     # add argparse arguments
     parser = argparse.ArgumentParser(
-        description="Random agent for Isaac Lab environments.")
-    parser.add_argument("--num_envs", type=int, default=None,
-                        help="Number of environments to simulate.")
-    parser.add_argument("--task", type=str, default=None,
-                        help="Name of the task.")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for reproducibility.")
-    parser.add_argument("--sweep", action="store_true",
-                        help="Enable WandB parameter sweeping.")
-    parser.add_argument("--save", action="store_true", help="Enable saving of agents (Policy and Value networks)"
-                                                            "every 100 updates, new best performance, and at the end")
+        description="Random agent for Isaac Lab environments."
+    )
+    parser.add_argument(
+        "--num_envs", type=int, default=None, help="Number of environments to simulate."
+    )
+    parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed for reproducibility."
+    )
+    parser.add_argument(
+        "--sweep", action="store_true", help="Enable WandB parameter sweeping."
+    )
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        help="Enable saving of agents (Policy and Value networks)"
+        "every 100 updates, new best performance, and at the end",
+    )
 
     # append AppLauncher cli args
     AppLauncher.add_app_launcher_args(parser)

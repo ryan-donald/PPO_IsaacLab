@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import argparse
 
 
@@ -31,7 +32,7 @@ class EnvConfig:
             self.max_iterations = 400
             self.hidden_dims = [32, 32]
             self.entropy_coef = 5e-3
-        elif (("SO-ARM101" in args_cli.task) and ("Lift" in args_cli.task)):
+        elif ("SO-ARM101" in args_cli.task) and ("Lift" in args_cli.task):
             self.lr = 5e-4
             self.hidden_dims = [256, 128, 64]
             self.num_learning_epochs = 5
