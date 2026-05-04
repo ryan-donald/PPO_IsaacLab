@@ -57,7 +57,7 @@ def train(args_cli):
     env_config.read(get_cfg_path(args_cli.task))
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    wandb.init(project="PPO IsaacLab", name=f"{args_cli.task}_{run_id}")
+    run = wandb.init(project="PPO IsaacLab", name=f"{args_cli.task}_{run_id}")
 
     learning_rate = float(env_config["train"]["learning_rate"])
     gamma = float(env_config["train"]["gamma"])
@@ -177,10 +177,16 @@ def train(args_cli):
         "episodes": 0.0,
         "Mean Reward": 0.0,
         "Max Reward": 0.0,
+        "Epochs": 0.0,
+        "Runtime": 0.0,
+        "Remaining Time": 0.0,
     }
 
+    run_url = run.url
+
     live = Live(
-        generate_table(stats, last_term_rewards, args_cli.task), refresh_per_second=4
+        generate_table(stats, last_term_rewards, args_cli.task, run_url),
+        refresh_per_second=4,
     )
     live.start()
 
@@ -346,14 +352,19 @@ def train(args_cli):
         wandb.log(logging_dict, step=update)
 
         stats["steps"] += steps_per_rollout
-        stats["steps/s"] = stats["steps"] / (time.perf_counter() - start_time)
+        stats["Runtime"] = time.perf_counter() - start_time
+        stats["steps/s"] = stats["steps"] / stats["Runtime"]
         stats["lr"] = agent.current_lr
         stats["kl"] = mean_kl
         stats["episodes"] += len(episode_rewards)
         stats["Mean Reward"] = avg_reward
         stats["Max Reward"] = max_reward
+        stats["Epochs"] = update + 1
+        stats["Remaining Time"] = (
+            (max_iterations - (update + 1)) * steps_per_rollout / stats["steps/s"]
+        )
 
-        live.update(generate_table(stats, last_term_rewards, args_cli.task))
+        live.update(generate_table(stats, last_term_rewards, args_cli.task, run_url))
 
         # if (update + 1) % 10 == 0:
         #     print(f"Update {update + 1}/{max_iterations} | "
