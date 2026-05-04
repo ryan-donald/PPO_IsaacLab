@@ -11,6 +11,7 @@ def train(args_cli):
     import configparser
     import os
     import random
+    import time
     from datetime import datetime
 
     import gymnasium as gym
@@ -19,9 +20,11 @@ def train(args_cli):
     import torch
     import wandb
     from isaaclab_tasks.utils import parse_env_cfg
+    from rich.live import Live
 
     import ryan_tasks  # noqa: F401
     from ryan_ppo.ppo import PPOAgent
+    from ryan_ppo.utils import generate_table
 
     # set device before using it in class instantiation
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -166,6 +169,22 @@ def train(args_cli):
     last_std_reward = 0.0
     last_term_rewards = {name: 0.0 for name in term_names}
 
+    stats = {
+        "steps": 0,
+        "steps/s": 0.0,
+        "lr": 0.0,
+        "kl": 0.0,
+        "episodes": 0.0,
+        "Mean Reward": 0.0,
+        "Max Reward": 0.0,
+    }
+
+    live = Live(
+        generate_table(stats, last_term_rewards, args_cli.task), refresh_per_second=4
+    )
+    live.start()
+
+    start_time = time.perf_counter()
     for update in range(max_iterations):
         states = torch.zeros((num_steps, num_envs, state_dim)).to(device)
         actions = torch.zeros((num_steps, num_envs, action_dim), dtype=torch.float).to(
@@ -326,6 +345,16 @@ def train(args_cli):
 
         wandb.log(logging_dict, step=update)
 
+        stats["steps"] += steps_per_rollout
+        stats["steps/s"] = stats["steps"] / (time.perf_counter() - start_time)
+        stats["lr"] = agent.current_lr
+        stats["kl"] = mean_kl
+        stats["episodes"] += len(episode_rewards)
+        stats["Mean Reward"] = avg_reward
+        stats["Max Reward"] = max_reward
+
+        live.update(generate_table(stats, last_term_rewards, args_cli.task))
+
         # if (update + 1) % 10 == 0:
         #     print(f"Update {update + 1}/{max_iterations} | "
         #         f"Avg: {avg_reward:.2f} ± {std_reward:.2f} | "
@@ -341,7 +370,7 @@ def train(args_cli):
                 curr_max = avg_reward
                 torch.save(agent.actor.state_dict(), log_path + "actor_best.pth")
                 torch.save(agent.critic.state_dict(), log_path + "critic_best.pth")
-                print(f"New best model saved with average reward: {curr_max:.2f}")
+                # print(f"New best model saved with average reward: {curr_max:.2f}")
 
             # save checkpoint every 100 iterations
             if (update + 1) % 100 == 0:
@@ -352,11 +381,12 @@ def train(args_cli):
                     agent.critic.state_dict(),
                     log_path + f"critic_iter_{update + 1}.pth",
                 )
-                print(f"Checkpoint saved at iteration {update + 1}")
+                # print(f"Checkpoint saved at iteration {update + 1}")
 
     env.close()
     wandb.finish()
     simulation_app.close()
+    live.close()
 
     # save final model
     if args_cli.save:

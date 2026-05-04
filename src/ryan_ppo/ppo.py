@@ -3,10 +3,10 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.optim as optim
-from rsl_rl.modules import EmpiricalNormalization
 from torch.distributions import Normal
 
 from ryan_ppo.network import Actor, Critic
+from ryan_ppo.normalization import ObsNormalization
 
 
 class PPOAgent:
@@ -29,7 +29,7 @@ class PPOAgent:
     ) -> None:
 
         if use_normalization:
-            self.obs_normalizer = EmpiricalNormalization(state_dim)
+            self.obs_normalizer = ObsNormalization(state_dim)
 
         # initialization of networks and optimizer
         self.device = device
@@ -41,8 +41,8 @@ class PPOAgent:
             list(self.actor.parameters()) + list(self.critic.parameters()), lr=lr
         )
 
-        # self.actor = torch.compile(self.actor)
-        # self.critic = torch.compile(self.critic)
+        self.actor = torch.compile(self.actor)
+        self.critic = torch.compile(self.critic)
 
         # hyperparameters
         self.gamma = gamma
@@ -57,7 +57,9 @@ class PPOAgent:
 
         self.update_count = 0
 
-    def select_action(self, state_obs: torch.tensor) -> None:
+    def select_action(
+        self, state_obs: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # selects action based upon an observation and the current policy,
         # returns action, log_prob, entropy
         if not torch.is_tensor(state_obs):
@@ -74,14 +76,14 @@ class PPOAgent:
         log_prob = dist.log_prob(action).sum(dim=-1)
         return action, log_prob, entropy
 
-    # @torch.compile
+    @torch.compile
     def compute_gae(
         self,
-        rewards: torch.tensor,
-        values: torch.tensor,
-        dones: torch.tensor,
-        next_value: torch.tensor,
-    ) -> tuple[torch.tensor, torch.tensor]:
+        rewards: torch.Tensor,
+        values: torch.Tensor,
+        dones: torch.Tensor,
+        next_value: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # computes normalized generalized advantage estimates (GAE)
 
         values_extended = torch.cat([values, next_value.unsqueeze(0)], dim=0)
@@ -110,14 +112,14 @@ class PPOAgent:
     # @torch.compile
     def update(
         self,
-        states: torch.tensor,
-        actions: torch.tensor,
-        log_probs_old: torch.tensor,
-        returns: torch.tensor,
-        advantages: torch.tensor,
-        values_old: torch.tensor,
-        mus_old: torch.tensor,
-        stds_old: torch.tensor,
+        states: torch.Tensor,
+        actions: torch.Tensor,
+        log_probs_old: torch.Tensor,
+        returns: torch.Tensor,
+        advantages: torch.Tensor,
+        values_old: torch.Tensor,
+        mus_old: torch.Tensor,
+        stds_old: torch.Tensor,
         epochs: int = 4,
         batch_size: int = 64,
     ) -> float:

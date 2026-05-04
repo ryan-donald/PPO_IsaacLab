@@ -45,7 +45,7 @@ class Actor(nn.Module):
                 nn.init.orthogonal_(module.weight, gain=0.01)
                 nn.init.constant_(module.bias, 0.0)
 
-    def forward(self, x: torch.tensor) -> tuple[torch.tensor, torch.tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # normalize observations, then forward pass
         if self.obs_normalizer:
             x = self.obs_normalizer(x)
@@ -56,7 +56,7 @@ class Actor(nn.Module):
         std = torch.exp(self.log_std)
         return mu, std
 
-    def update_normalization(self, obs: torch.tensor) -> None:
+    def update_normalization(self, obs: torch.Tensor) -> None:
         # update observation normalization statistics
         if self.obs_normalizer:
             self.obs_normalizer.update(obs)
@@ -97,7 +97,7 @@ class Critic(nn.Module):
                 nn.init.orthogonal_(module.weight, gain=1.0)
                 nn.init.constant_(module.bias, 0.0)
 
-    def forward(self, x: torch.tensor) -> torch.tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.obs_normalizer:
             x = self.obs_normalizer(x)
 
@@ -106,7 +106,7 @@ class Critic(nn.Module):
         x = self.output_layer(x)
         return x
 
-    def update_normalization(self, obs: torch.tensor) -> None:
+    def update_normalization(self, obs: torch.Tensor) -> None:
         # update observation normalization statistics
         if self.obs_normalizer:
             self.obs_normalizer.update(obs)
