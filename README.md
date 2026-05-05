@@ -34,6 +34,13 @@ Using this package, I have been able to perform Sim2Real transfer of a Reach age
 
 https://github.com/user-attachments/assets/05b79426-c632-4059-a94b-402b9918e99a
 
+## Experiment Tracking in Terminal
+With the help of the python package [rich](https://github.com/textualize/rich), I have a display in the terminal which provides information about the currently running experiment, including reward terms, learning parameters, performance, remaining time, and a clickable link to the current WandB run. An example of this can be seen below:
+
+<div align="center">
+  <img src="https://raw.githubusercontent.com/ryan-donald/ppo/main/images/terminal_display.png" width="100%" alt="Parameter Sweep">
+</div>
+
 # Script Structure
 The main structure of this repository is as follows:  
 * network.py - Contains the *Actor* and *Critic* network classes, used to represent the policy and value functions in the PPO algorithm.  

@@ -52,7 +52,6 @@ def train(args_cli):
     env.reset()
 
     # get environment-specific training configuration
-    # env_config = EnvConfig(args_cli)
     env_config = configparser.ConfigParser()
     env_config.read(get_cfg_path(args_cli.task))
 
@@ -119,17 +118,6 @@ def train(args_cli):
     num_steps = num_steps_per_env
     curr_max = -float("inf")
 
-    # print training configuration
-    # print(f"Training configuration:")
-    # print(f"  Num environments: {num_envs}")
-    # print(f"  Steps per env per rollout: {num_steps_per_env}")
-    # print(f"  Total steps per rollout: {steps_per_rollout}")
-    # print(f"  Mini-batches: {num_mini_batches}")
-    # print(f"  Batch size: {batch_size}")
-    # print(f"  Learning epochs: {num_learning_epochs}")
-    # print(f"  Max iterations: {max_iterations}")
-    # print(f"  Total timesteps: {max_iterations * steps_per_rollout:,}")
-
     # logging and checkpointing
     log_path = f"ppo_logs/{args_cli.task}/{run_id}/"
     os.makedirs(log_path, exist_ok=True)
@@ -144,8 +132,6 @@ def train(args_cli):
     #         agent.critic.load_state_dict(torch.load(
     #             log_path + "critic_final.pth", map_location=device))
     #         print(f"Loaded checkpoint. Continuing training...")
-
-    # print("\nStarting training...\n")
 
     # storage for episode rewards and lengths, and other plotting data
     current_episode_rewards = torch.zeros(num_envs, device=device)
@@ -351,6 +337,9 @@ def train(args_cli):
 
         wandb.log(logging_dict, step=update)
 
+        last_term_rewards["Mean Reward"] = avg_reward
+        last_term_rewards["Max Reward"] = max_reward
+
         stats["steps"] += steps_per_rollout
         stats["Runtime"] = time.perf_counter() - start_time
         stats["steps/s"] = stats["steps"] / stats["Runtime"]
@@ -381,7 +370,6 @@ def train(args_cli):
                 curr_max = avg_reward
                 torch.save(agent.actor.state_dict(), log_path + "actor_best.pth")
                 torch.save(agent.critic.state_dict(), log_path + "critic_best.pth")
-                # print(f"New best model saved with average reward: {curr_max:.2f}")
 
             # save checkpoint every 100 iterations
             if (update + 1) % 100 == 0:
@@ -392,7 +380,6 @@ def train(args_cli):
                     agent.critic.state_dict(),
                     log_path + f"critic_iter_{update + 1}.pth",
                 )
-                # print(f"Checkpoint saved at iteration {update + 1}")
 
     env.close()
     wandb.finish()
