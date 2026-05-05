@@ -5,20 +5,11 @@ from rich.table import Table
 def generate_table(
     stats_dict: dict, rewards_dict: dict, title: str, run_url: str = None
 ) -> Table:
-def generate_table(
-    stats_dict: dict, rewards_dict: dict, title: str, run_url: str = None
-) -> Table:
     """
     Make table for display in terminal of current training run.
     """
 
     TITLE_COLOR = "[dodger_blue1]"
-
-    if run_url:
-        title = f"[link={run_url}]{title} (WandB)[/link]"
-
-    TITLE_COLOR = "[dodger_blue1]"
-
     if run_url:
         title = f"[link={run_url}]{title} (WandB)[/link]"
 
@@ -26,7 +17,6 @@ def generate_table(
     main_table = Table(
         box=box.ROUNDED,
         show_header=False,
-        border_style="magenta",
         border_style="magenta",
     )
     main_table.add_column(justify="center")
@@ -36,10 +26,8 @@ def generate_table(
 
     # first inner table, contains metrics and values for training data.
     metric_table = Table(box=None, show_edge=False, border_style="cyan", expand=True)
-    metric_table = Table(box=None, show_edge=False, border_style="cyan", expand=True)
 
     # second inner table, contains reward terms and average values over recent episodes.
-    reward_table = Table(box=None, show_edge=False, border_style="cyan", expand=True)
     reward_table = Table(box=None, show_edge=False, border_style="cyan", expand=True)
 
     metric_table.add_column(TITLE_COLOR + "Run Info", style="white", width=12)
