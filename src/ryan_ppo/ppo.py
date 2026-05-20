@@ -217,13 +217,13 @@ class PPOAgent:
                 actor_loss = -torch.min(surr1, surr2).mean()
 
                 # compute clipped value loss
-                values = self.critic(batch_states).squeeze()
+                values = self.critic(batch_states).view(-1)
                 value_pred_clipped = batch_values_old + torch.clamp(
                     values - batch_values_old, -self.clip_epsilon, self.clip_epsilon
                 )
                 value_losses = (values - batch_returns).pow(2)
                 value_losses_clipped = (value_pred_clipped - batch_returns).pow(2)
-                critic_loss = torch.max(value_losses, value_losses_clipped).mean()
+                critic_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
 
                 # total loss
                 loss = (

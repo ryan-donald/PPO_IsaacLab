@@ -17,6 +17,7 @@ def play(args_cli):
     import torch
     from isaaclab_tasks.utils import parse_env_cfg
 
+    import ryan_tasks  # noqa: F401
     from ryan_ppo.ppo import PPOAgent
 
     # set device before using it in class instantiation

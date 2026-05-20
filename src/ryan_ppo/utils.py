@@ -21,7 +21,6 @@ def generate_table(
     )
     main_table.add_column(justify="center")
     main_table.add_row(TITLE_COLOR + title)
-    main_table.add_row(TITLE_COLOR + title)
     main_table.add_section()
 
     # first inner table, contains metrics and values for training data.
