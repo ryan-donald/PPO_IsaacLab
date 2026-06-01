@@ -150,14 +150,11 @@ def train(args_cli):
     reward_manager = env.unwrapped.reward_manager
     term_names = reward_manager.active_terms
     num_terms = len(term_names)
-    current_term_rewards = torch.zeros(
-        num_envs, num_terms, device=device
-    )  # accumulator per env
-    episode_term_rewards = {name: [] for name in term_names}  # completed episode sums
-    # print(f"Logging {num_terms} reward terms: {term_names}")
+    current_term_rewards = torch.zeros(num_envs, num_terms, device=device)
 
     # Track last known metrics for forward-filling when
     # rollouts have zero completed episodes
+    num_episodes_completed = 0
     last_avg_reward = 0.0
     last_min_reward = 0.0
     last_max_reward = 0.0
@@ -200,12 +197,12 @@ def train(args_cli):
     mus = torch.zeros((num_steps, num_envs, action_dim)).to(device)
     stds = torch.zeros((num_steps, num_envs, action_dim)).to(device)
 
-    for update in range(max_iterations):
-        # stores data of episodes during this update
-        episode_rewards = []
-        episode_lengths = []
-        episode_term_rewards = {name: [] for name in term_names}
+    # preallocate history buffers for calculating episode metrics outside the step loop
+    historic_episode_rewards = torch.zeros((num_steps, num_envs), device=device)
+    historic_episode_lengths = torch.zeros((num_steps, num_envs), device=device)
+    historic_term_rewards = torch.zeros((num_steps, num_envs, num_terms), device=device)
 
+    for update in range(max_iterations):
         for step in range(num_steps):
             # handle both Dict and Box observation spaces
             if isinstance(state, dict):
@@ -230,7 +227,7 @@ def train(args_cli):
                 action, log_prob, entropy = agent.select_action(state_obs)
                 value = agent.critic(state_obs).squeeze()
 
-                # Get mu and std for KL divergence computation
+                # get mu and std for KL divergence computation
                 mu, std = agent.actor(state_obs)
 
             if args_cli.profile:
@@ -267,26 +264,16 @@ def train(args_cli):
             # accumulate per-term rewards: _step_reward shape is (num_envs, num_terms)
             current_term_rewards += reward_manager._step_reward.detach()
 
-            episode_done_mask = dones[step].bool()
+            # stores current episode data for finished episodes
+            historic_episode_rewards[step] = current_episode_rewards
+            historic_episode_lengths[step] = current_episode_lengths
+            historic_term_rewards[step] = current_term_rewards
 
-            # for any completed episodes, store their rewards and lengths
-            if episode_done_mask.any():
-                completed_rewards = current_episode_rewards[episode_done_mask]
-                completed_lengths = current_episode_lengths[episode_done_mask]
-
-                episode_rewards.extend(completed_rewards.cpu().numpy().tolist())
-                episode_lengths.extend(completed_lengths.cpu().numpy().tolist())
-
-                current_episode_rewards[episode_done_mask] = 0
-                current_episode_lengths[episode_done_mask] = 0
-
-                # store per-term episode sums for completed envs
-                for t_idx, t_name in enumerate(term_names):
-                    completed_term = current_term_rewards[episode_done_mask, t_idx]
-                    episode_term_rewards[t_name].extend(
-                        completed_term.cpu().numpy().tolist()
-                    )
-                current_term_rewards[episode_done_mask] = 0
+            # resets the current episode data tracking for finished episodes
+            not_done_mask = 1.0 - dones[step]
+            current_episode_rewards *= not_done_mask
+            current_episode_lengths *= not_done_mask
+            current_term_rewards *= not_done_mask.unsqueeze(-1)
 
         # bootstrap next value for GAE
         with torch.no_grad():
@@ -333,20 +320,34 @@ def train(args_cli):
         if args_cli.profile:
             carb.profiler.begin(6, "logging/cli")
 
-        # logging
-        if episode_rewards:
-            avg_reward = np.mean(episode_rewards)
-            min_reward = np.min(episode_rewards)
-            max_reward = np.max(episode_rewards)
-            std_reward = np.std(episode_rewards) if len(episode_rewards) > 1 else 0.0
+        # logging, minimize GPU -> CPU transfer to improve performance
+        done_mask = dones.bool()
+        num_completed = done_mask.sum().item()
+
+        if num_completed > 0:
+            # returns only values for finished episodes
+            completed_rewards = historic_episode_rewards[done_mask]
+            num_episodes_completed = completed_rewards.numel()
+
+            # calculates stats in pytorch on GPU, then move single value to CPU
+            avg_reward = completed_rewards.mean().item()
+            min_reward = completed_rewards.min().item()
+            max_reward = completed_rewards.max().item()
+            std_reward = completed_rewards.std().item() if num_completed > 1 else 0.0
 
             # update trackers
             last_avg_reward = avg_reward
             last_min_reward = min_reward
             last_max_reward = max_reward
             last_std_reward = std_reward
+
+            for t_idx, t_name in enumerate(term_names):
+                completed_terms = historic_term_rewards[:, :, t_idx][done_mask]
+                avg_term = completed_terms.mean().item()
+                last_term_rewards[t_name] = avg_term
+
         else:
-            # forward-fill
+            # forward-fill if no new episodes finished
             avg_reward = last_avg_reward
             min_reward = last_min_reward
             max_reward = last_max_reward
@@ -359,19 +360,11 @@ def train(args_cli):
             "train/std_reward": std_reward,
             "train/kl": mean_kl,
             "train/lr": agent.current_lr,
-            "train/episodes": len(episode_rewards),
+            "train/episodes": num_episodes_completed,
         }
 
         for t_name in term_names:
-            if episode_term_rewards[t_name]:
-                # calculate mean and update tracker
-                avg_term = np.mean(episode_term_rewards[t_name])
-                last_term_rewards[t_name] = avg_term
-            else:
-                # forward-fill
-                avg_term = last_term_rewards[t_name]
-
-            logging_dict[f"rewards/{t_name}"] = avg_term
+            logging_dict[f"rewards/{t_name}"] = last_term_rewards[t_name]
 
         wandb.log(logging_dict, step=update)
 
@@ -383,7 +376,7 @@ def train(args_cli):
         stats["steps/s"] = stats["steps"] / stats["Runtime"]
         stats["lr"] = agent.current_lr
         stats["kl"] = mean_kl
-        stats["episodes"] += len(episode_rewards)
+        stats["episodes"] += num_episodes_completed
         stats["Mean Reward"] = avg_reward
         stats["Max Reward"] = max_reward
         stats["Epochs"] = update + 1
@@ -396,18 +389,9 @@ def train(args_cli):
         if args_cli.profile:
             carb.profiler.end(6)
 
-        # if (update + 1) % 10 == 0:
-        #     print(f"Update {update + 1}/{max_iterations} | "
-        #         f"Avg: {avg_reward:.2f} ± {std_reward:.2f} | "
-        #         f"Range: [{min_reward:.2f}, {max_reward:.2f}] | "
-        #         f"KL: {mean_kl:.4f} | "
-        #         f"LR: {agent.current_lr:.2e} | "
-        #         f"Ep: {len(episode_rewards)} | "
-        #         f"Steps: {(update + 1) * steps_per_rollout:,}")
-
         # save best model when reward improves
         if args_cli.save:
-            if len(episode_rewards) >= 100 and avg_reward > curr_max:
+            if avg_reward > curr_max:
                 curr_max = avg_reward
                 torch.save(agent.actor.state_dict(), log_path + "actor_best.pth")
                 torch.save(agent.critic.state_dict(), log_path + "critic_best.pth")
