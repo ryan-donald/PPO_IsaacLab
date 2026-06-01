@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import numpy as np
 import torch
 import torch.optim as optim
 from torch.distributions import Normal
@@ -147,7 +146,7 @@ class PPOAgent:
             #     break
 
             # randomizes batch data
-            indices = np.random.permutation(dataset_size)
+            indices = torch.randperm(dataset_size, device=self.device)
 
             # mini-batch updates
             for start in range(0, dataset_size, batch_size):
@@ -233,7 +232,7 @@ class PPOAgent:
                 )
 
                 # gradient descent step, with a clipped gradient norm
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
 
                 torch.nn.utils.clip_grad_norm_(

@@ -5,8 +5,17 @@ from isaaclab.app import AppLauncher
 
 def train(args_cli):
     # launch omniverse app
-    app_launcher = AppLauncher(args_cli)
+    app_kwargs = {}
+    if args_cli.profile:
+        app_kwargs["profiler_backend"] = ["tracy"]
+
+    app_launcher = AppLauncher(args_cli, **app_kwargs)
     simulation_app = app_launcher.app
+
+    if args_cli.profile:
+        import carb.profiler
+
+        carb.profiler.begin(1, "train_loop")
 
     import configparser
     import os
@@ -177,19 +186,22 @@ def train(args_cli):
     live.start()
 
     start_time = time.perf_counter()
-    for update in range(max_iterations):
-        states = torch.zeros((num_steps, num_envs, state_dim)).to(device)
-        actions = torch.zeros((num_steps, num_envs, action_dim), dtype=torch.float).to(
-            device
-        )
-        log_probs = torch.zeros((num_steps, num_envs)).to(device)
-        rewards = torch.zeros((num_steps, num_envs)).to(device)
-        dones = torch.zeros((num_steps, num_envs)).to(device)
-        values = torch.zeros((num_steps, num_envs)).to(device)
-        entropies = torch.zeros((num_steps, num_envs)).to(device)
-        mus = torch.zeros((num_steps, num_envs, action_dim)).to(device)
-        stds = torch.zeros((num_steps, num_envs, action_dim)).to(device)
 
+    # allocate tensors for storing rollout info
+    states = torch.zeros((num_steps, num_envs, state_dim)).to(device)
+    actions = torch.zeros((num_steps, num_envs, action_dim), dtype=torch.float).to(
+        device
+    )
+    log_probs = torch.zeros((num_steps, num_envs)).to(device)
+    rewards = torch.zeros((num_steps, num_envs)).to(device)
+    dones = torch.zeros((num_steps, num_envs)).to(device)
+    values = torch.zeros((num_steps, num_envs)).to(device)
+    entropies = torch.zeros((num_steps, num_envs)).to(device)
+    mus = torch.zeros((num_steps, num_envs, action_dim)).to(device)
+    stds = torch.zeros((num_steps, num_envs, action_dim)).to(device)
+
+    for update in range(max_iterations):
+        # stores data of episodes during this update
         episode_rewards = []
         episode_lengths = []
         episode_term_rewards = {name: [] for name in term_names}
@@ -210,6 +222,9 @@ def train(args_cli):
                 agent.actor.update_normalization(state_obs)
                 agent.critic.update_normalization(state_obs)
 
+            if args_cli.profile:
+                carb.profiler.begin(2, "select_action")
+
             # select action from policy
             with torch.no_grad():
                 action, log_prob, entropy = agent.select_action(state_obs)
@@ -218,8 +233,16 @@ def train(args_cli):
                 # Get mu and std for KL divergence computation
                 mu, std = agent.actor(state_obs)
 
+            if args_cli.profile:
+                carb.profiler.end(2)
+
+            if args_cli.profile:
+                carb.profiler.begin(3, "env_step")
             # take step in environment
             next_state, reward, terminated, truncated, info = env.step(action)
+
+            if args_cli.profile:
+                carb.profiler.end(3)
             done = torch.logical_or(terminated, truncated)
 
             reward = reward + agent.gamma * value * truncated.float()
@@ -278,8 +301,17 @@ def train(args_cli):
 
             next_value = agent.critic(next_state_obs).squeeze()
 
+        if args_cli.profile:
+            carb.profiler.begin(4, "compute_gae")
+
         # compute GAE advantages and returns
         advantages, returns = agent.compute_gae(rewards, values, dones, next_value)
+
+        if args_cli.profile:
+            carb.profiler.end(4)
+
+        if args_cli.profile:
+            carb.profiler.begin(5, "update")
 
         # update actor and critic networks
         mean_kl = agent.update(
@@ -294,6 +326,12 @@ def train(args_cli):
             epochs=num_learning_epochs,
             batch_size=batch_size,
         )
+
+        if args_cli.profile:
+            carb.profiler.end(5)
+
+        if args_cli.profile:
+            carb.profiler.begin(6, "logging/cli")
 
         # logging
         if episode_rewards:
@@ -355,6 +393,9 @@ def train(args_cli):
 
         live.update(generate_table(stats, last_term_rewards, args_cli.task, run_url))
 
+        if args_cli.profile:
+            carb.profiler.end(6)
+
         # if (update + 1) % 10 == 0:
         #     print(f"Update {update + 1}/{max_iterations} | "
         #         f"Avg: {avg_reward:.2f} ± {std_reward:.2f} | "
@@ -383,13 +424,17 @@ def train(args_cli):
 
     env.close()
     wandb.finish()
-    simulation_app.close()
     live.close()
 
     # save final model
     if args_cli.save:
         torch.save(agent.actor.state_dict(), log_path + "actor_final.pth")
         torch.save(agent.critic.state_dict(), log_path + "critic_final.pth")
+
+    if args_cli.profile:
+        carb.profiler.end(1)
+
+    simulation_app.close()
 
 
 def get_cfg_path(task):
@@ -425,11 +470,31 @@ if __name__ == "__main__":
         help="Enable saving of agents (Policy and Value networks)"
         "every 100 updates, new best performance, and at the end",
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Profile the training loop using cProfile.",
+    )
 
     # append AppLauncher cli args
     AppLauncher.add_app_launcher_args(parser)
 
     # parse the arguments
     args_cli, _ = parser.parse_known_args()
+
+    import sys
+
+    if args_cli.profile:
+        print("Profiling enabled using carb.profiler with Tracy backend.")
+        sys.argv.extend(
+            [
+                "--enable",
+                "omni.kit.profiler.tracy",
+                "--/profiler/enabled=true",
+                "--/app/profilerBackend=tracy",
+                "--/privacy/externalBuild=0",
+                "--/app/profileFromStart=true",
+            ]
+        )
 
     train(args_cli)
