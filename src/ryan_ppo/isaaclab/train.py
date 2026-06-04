@@ -130,7 +130,6 @@ def train(args_cli):
     # logging and checkpointing
     log_path = f"ppo_logs/{args_cli.task}/{run_id}/"
     os.makedirs(log_path, exist_ok=True)
-    log_path + "actor_final.pth"
 
     # if os.path.exists(checkpoint_path):
     #     print(f"\nFound existing checkpoint: {checkpoint_path}")
@@ -159,6 +158,7 @@ def train(args_cli):
     last_min_reward = 0.0
     last_max_reward = 0.0
     last_std_reward = 0.0
+    last_avg_entropy = 0.0
     last_term_rewards = {name: 0.0 for name in term_names}
 
     stats = {
@@ -217,18 +217,14 @@ def train(args_cli):
             # update normalization statistics
             if env_config["train"]["use_normalization"] == "True":
                 agent.actor.update_normalization(state_obs)
-                agent.critic.update_normalization(state_obs)
 
             if args_cli.profile:
                 carb.profiler.begin(2, "select_action")
 
             # select action from policy
             with torch.no_grad():
-                action, log_prob, entropy = agent.select_action(state_obs)
+                action, log_prob, entropy, mu, std = agent.select_action(state_obs)
                 value = agent.critic(state_obs).squeeze()
-
-                # get mu and std for KL divergence computation
-                mu, std = agent.actor(state_obs)
 
             if args_cli.profile:
                 carb.profiler.end(2)
@@ -312,6 +308,7 @@ def train(args_cli):
             stds,
             epochs=num_learning_epochs,
             batch_size=batch_size,
+            num_mini_batches=num_mini_batches,
         )
 
         if args_cli.profile:
@@ -335,11 +332,15 @@ def train(args_cli):
             max_reward = completed_rewards.max().item()
             std_reward = completed_rewards.std().item() if num_completed > 1 else 0.0
 
+            avg_entropy = entropies.mean().item()
+
             # update trackers
             last_avg_reward = avg_reward
             last_min_reward = min_reward
             last_max_reward = max_reward
             last_std_reward = std_reward
+
+            last_avg_entropy = avg_entropy
 
             for t_idx, t_name in enumerate(term_names):
                 completed_terms = historic_term_rewards[:, :, t_idx][done_mask]
@@ -353,6 +354,8 @@ def train(args_cli):
             max_reward = last_max_reward
             std_reward = last_std_reward
 
+            avg_entropy = last_avg_entropy
+
         logging_dict = {
             "train/avg_reward": avg_reward,
             "train/min_reward": min_reward,
@@ -361,6 +364,7 @@ def train(args_cli):
             "train/kl": mean_kl,
             "train/lr": agent.current_lr,
             "train/episodes": num_episodes_completed,
+            "train/avg_entropy": avg_entropy,
         }
 
         for t_name in term_names:
@@ -426,7 +430,7 @@ def get_cfg_path(task):
 
     current_file_path = Path(__file__).resolve()
     project_root = current_file_path.parents[3]
-    ini_file_path = project_root / "cfg" / f"{args_cli.task}.ini"
+    ini_file_path = project_root / "cfg" / f"{task}.ini"
     if not ini_file_path.exists():
         raise FileNotFoundError(f"Configuration file not found at: {ini_file_path}")
 

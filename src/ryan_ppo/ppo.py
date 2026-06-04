@@ -29,6 +29,8 @@ class PPOAgent:
 
         if use_normalization:
             self.obs_normalizer = ObsNormalization(state_dim)
+        else:
+            self.obs_normalizer = None
 
         # initialization of networks and optimizer
         self.device = device
@@ -36,9 +38,11 @@ class PPOAgent:
             device
         )
         self.critic = Critic(state_dim, hidden_dims, self.obs_normalizer).to(device)
-        self.optimizer = optim.Adam(
-            list(self.actor.parameters()) + list(self.critic.parameters()), lr=lr
-        )
+
+        self.actor_params = list(self.actor.parameters())
+        self.critic_params = list(self.critic.parameters())
+
+        self.optimizer = optim.Adam(self.actor_params + self.critic_params, lr=lr)
 
         self.actor = torch.compile(self.actor)
         self.critic = torch.compile(self.critic)
@@ -73,7 +77,7 @@ class PPOAgent:
         action = dist.sample()
         entropy = dist.entropy().sum(dim=-1)
         log_prob = dist.log_prob(action).sum(dim=-1)
-        return action, log_prob, entropy
+        return action, log_prob, entropy, mu, std
 
     @torch.compile
     def compute_gae(
@@ -103,9 +107,6 @@ class PPOAgent:
 
         returns = advantages + values
 
-        # advantages = (advantages - advantages.mean()) / \
-        #     (advantages.std() + 1e-8)
-
         return advantages, returns
 
     # @torch.compile
@@ -121,6 +122,7 @@ class PPOAgent:
         stds_old: torch.Tensor,
         epochs: int = 4,
         batch_size: int = 64,
+        num_mini_batches: int = 4,
     ) -> float:
         # updates Actor and Critic networks using the PPO algorithm
 
@@ -136,17 +138,15 @@ class PPOAgent:
 
         dataset_size = b_states.shape[0]
 
-        mean_kl = 0.0
+        mean_kl = 0
         num_updates = 0
 
         # training loop
         for epoch in range(epochs):
-            # early stopping for KL divergence
-            # if stop_early:
-            #     break
-
             # randomizes batch data
             indices = torch.randperm(dataset_size, device=self.device)
+
+            epoch_kl = 0
 
             # mini-batch updates
             for start in range(0, dataset_size, batch_size):
@@ -176,7 +176,7 @@ class PPOAgent:
                 # full KL divergence
                 with torch.no_grad():
                     kl = torch.sum(
-                        torch.log(std / (batch_stds_old + 1e-8) + 1e-8)
+                        torch.log(std / (batch_stds_old + 1e-8))
                         + (
                             torch.square(batch_stds_old)
                             + torch.square(batch_mus_old - mu)
@@ -186,7 +186,7 @@ class PPOAgent:
                         dim=-1,
                     )
                     batch_kl = kl.mean().item()
-                    mean_kl += batch_kl
+                    epoch_kl += batch_kl
                     num_updates += 1
 
                     if self.schedule_type == "adaptive":
@@ -196,13 +196,6 @@ class PPOAgent:
                             self.current_lr = min(1e-2, self.current_lr * 1.5)
                         for param_group in self.optimizer.param_groups:
                             param_group["lr"] = self.current_lr
-
-                    # early stopping: if KL has already exceeded the threshold, skip
-                    # remaining mini-batches and epochs to avoid
-                    # over-updating the policy
-                    # if batch_kl > self.desired_kl * 2.0:
-                    #     # stop_early = True
-                    #     continue
 
                 # compute surrogate loss
                 ratios = torch.exp(log_probs - batch_log_probs_old)
@@ -236,10 +229,15 @@ class PPOAgent:
                 loss.backward()
 
                 torch.nn.utils.clip_grad_norm_(
-                    list(self.actor.parameters()) + list(self.critic.parameters()),
+                    self.actor_params + self.critic_params,
                     self.max_grad_norm,
                 )
                 self.optimizer.step()
+            mean_kl += epoch_kl
+
+            mean_epoch_kl = epoch_kl / num_mini_batches
+            if mean_epoch_kl > self.desired_kl * 1.5:
+                break
 
         # average KL divergence over all updates,
         # adjust learning rate if using adaptive schedule
