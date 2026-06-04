@@ -43,13 +43,17 @@ def test_select_action():
 
     random_input = torch.randn(batch_size, state_dim)
 
-    action, log_prob, entropy = agent.select_action(random_input)
+    action, log_prob, entropy, mu, std = agent.select_action(random_input)
 
     assert action.shape == (batch_size, action_dim), (
         "Action should be in shape (batch_size, action_dim)"
     )
     assert log_prob.shape == (batch_size,), "Log_prob should be in shape (batch_size,)"
     assert entropy.shape == (batch_size,), "Entropy should be in shape (batch_size,)"
+    assert mu.shape == (batch_size, action_dim), (
+        "mu should be in shape (batch_size, action_dim)"
+    )
+    assert std.shape == (action_dim,), "std should be in shape (action_dim,)"
 
 
 def test_compute_gae():
