@@ -131,15 +131,13 @@ def train(args_cli):
     log_path = f"ppo_logs/{args_cli.task}/{run_id}/"
     os.makedirs(log_path, exist_ok=True)
 
-    # if os.path.exists(checkpoint_path):
-    #     print(f"\nFound existing checkpoint: {checkpoint_path}")
-    #     response = input("Load and continue training? (y/N): ")
-    #     if response.lower() == 'y':
-    #         agent.actor.load_state_dict(torch.load(
-    #             checkpoint_path, map_location=device))
-    #         agent.critic.load_state_dict(torch.load(
-    #             log_path + "critic_final.pth", map_location=device))
-    #         print(f"Loaded checkpoint. Continuing training...")
+    # resume from a checkpoint. fully resumes the training, with actor, critic,
+    # optimizer, lr, and step count for correct curriculum firing.
+    start_iter = 0
+    if args_cli.resume:
+        start_iter = agent.load_checkpoint(args_cli.resume)
+        env.unwrapped.common_step_counter = start_iter * num_steps_per_env
+        print(f"Resumed from {args_cli.resume} at iteration {start_iter}.")
 
     # storage for episode rewards and lengths, and other plotting data
     current_episode_rewards = torch.zeros(num_envs, device=device)
@@ -151,7 +149,7 @@ def train(args_cli):
     num_terms = len(term_names)
     current_term_rewards = torch.zeros(num_envs, num_terms, device=device)
 
-    # Track last known metrics for forward-filling when
+    # track last known metrics for forward-filling when
     # rollouts have zero completed episodes
     num_episodes_completed = 0
     last_avg_reward = 0.0
@@ -161,23 +159,28 @@ def train(args_cli):
     last_avg_entropy = 0.0
     last_term_rewards = {name: 0.0 for name in term_names}
 
-    stats = {
+    perf_stats = {
         "steps": 0,
         "steps/s": 0.0,
-        "lr": 0.0,
-        "kl": 0.0,
+        "Rollout Time": 0.0,
+        "Update Time": 0.0,
         "episodes": 0.0,
-        "Mean Reward": 0.0,
-        "Max Reward": 0.0,
-        "Epochs": 0.0,
         "Runtime": 0.0,
         "Remaining Time": 0.0,
+    }
+
+    train_stats = {
+        "lr": 0.0,
+        "kl": 0.0,
+        "Epochs": 0.0,
     }
 
     run_url = run.url
 
     live = Live(
-        generate_table(stats, last_term_rewards, args_cli.task, run_url),
+        generate_table(
+            perf_stats, train_stats, last_term_rewards, args_cli.task, run_url
+        ),
         refresh_per_second=4,
     )
     live.start()
@@ -202,7 +205,8 @@ def train(args_cli):
     historic_episode_lengths = torch.zeros((num_steps, num_envs), device=device)
     historic_term_rewards = torch.zeros((num_steps, num_envs, num_terms), device=device)
 
-    for update in range(max_iterations):
+    for update in range(start_iter, max_iterations):
+        rollout_start = time.perf_counter()
         for step in range(num_steps):
             # handle both Dict and Box observation spaces
             if isinstance(state, dict):
@@ -224,7 +228,7 @@ def train(args_cli):
             # select action from policy
             with torch.no_grad():
                 action, log_prob, entropy, mu, std = agent.select_action(state_obs)
-                value = agent.critic(state_obs).squeeze()
+                value = agent.critic(state_obs).squeeze(-1)
 
             if args_cli.profile:
                 carb.profiler.end(2)
@@ -271,6 +275,8 @@ def train(args_cli):
             current_episode_lengths *= not_done_mask
             current_term_rewards *= not_done_mask.unsqueeze(-1)
 
+        rollout_time = time.perf_counter() - rollout_start
+
         # bootstrap next value for GAE
         with torch.no_grad():
             if isinstance(state, dict):
@@ -282,7 +288,7 @@ def train(args_cli):
             else:
                 next_state_obs = state
 
-            next_value = agent.critic(next_state_obs).squeeze()
+            next_value = agent.critic(next_state_obs).squeeze(-1)
 
         if args_cli.profile:
             carb.profiler.begin(4, "compute_gae")
@@ -297,6 +303,7 @@ def train(args_cli):
             carb.profiler.begin(5, "update")
 
         # update actor and critic networks
+        update_start = time.perf_counter()
         mean_kl = agent.update(
             states,
             actions,
@@ -310,6 +317,7 @@ def train(args_cli):
             batch_size=batch_size,
             num_mini_batches=num_mini_batches,
         )
+        update_time = time.perf_counter() - update_start
 
         if args_cli.profile:
             carb.profiler.end(5)
@@ -375,20 +383,25 @@ def train(args_cli):
         last_term_rewards["Mean Reward"] = avg_reward
         last_term_rewards["Max Reward"] = max_reward
 
-        stats["steps"] += steps_per_rollout
-        stats["Runtime"] = time.perf_counter() - start_time
-        stats["steps/s"] = stats["steps"] / stats["Runtime"]
-        stats["lr"] = agent.current_lr
-        stats["kl"] = mean_kl
-        stats["episodes"] += num_episodes_completed
-        stats["Mean Reward"] = avg_reward
-        stats["Max Reward"] = max_reward
-        stats["Epochs"] = update + 1
-        stats["Remaining Time"] = (
-            (max_iterations - (update + 1)) * steps_per_rollout / stats["steps/s"]
+        perf_stats["steps"] += steps_per_rollout
+        perf_stats["Runtime"] = time.perf_counter() - start_time
+        perf_stats["steps/s"] = perf_stats["steps"] / perf_stats["Runtime"]
+        perf_stats["Rollout Time"] = rollout_time
+        perf_stats["Update Time"] = update_time
+        perf_stats["episodes"] += num_episodes_completed
+        perf_stats["Remaining Time"] = (
+            (max_iterations - (update + 1)) * steps_per_rollout / perf_stats["steps/s"]
         )
 
-        live.update(generate_table(stats, last_term_rewards, args_cli.task, run_url))
+        train_stats["lr"] = agent.current_lr
+        train_stats["kl"] = mean_kl
+        train_stats["Epochs"] = update + 1
+
+        live.update(
+            generate_table(
+                perf_stats, train_stats, last_term_rewards, args_cli.task, run_url
+            )
+        )
 
         if args_cli.profile:
             carb.profiler.end(6)
@@ -410,14 +423,19 @@ def train(args_cli):
                     log_path + f"critic_iter_{update + 1}.pth",
                 )
 
+            # full checkpoint save during training for resuming to finetune later
+            if (update + 1) == args_cli.checkpoint_iter:
+                agent.save_checkpoint(log_path + "checkpoint_pretrain.pth", update + 1)
+
     env.close()
     wandb.finish()
-    live.close()
+    live.stop()
 
     # save final model
     if args_cli.save:
         torch.save(agent.actor.state_dict(), log_path + "actor_final.pth")
         torch.save(agent.critic.state_dict(), log_path + "critic_final.pth")
+        agent.save_checkpoint(log_path + "checkpoint_final.pth", max_iterations)
 
     if args_cli.profile:
         carb.profiler.end(1)
@@ -457,6 +475,20 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable saving of agents (Policy and Value networks)"
         "every 100 updates, new best performance, and at the end",
+    )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to a checkpoint_*.pth bundle to resume training from "
+        "(restores weights, optimizer, LR, and iteration).",
+    )
+    parser.add_argument(
+        "--checkpoint_iter",
+        type=int,
+        default=5000,
+        help="Iteration at which to save the single resumable checkpoint_pretrain.pth "
+        "bundle (default 5000, the curriculum-fire point). Requires --save.",
     )
     parser.add_argument(
         "--profile",

@@ -32,8 +32,8 @@ class PPOAgent:
         else:
             self.obs_normalizer = None
 
-        # initialization of networks and optimizer
         self.device = device
+
         self.actor = Actor(state_dim, action_dim, hidden_dims, self.obs_normalizer).to(
             device
         )
@@ -60,11 +60,40 @@ class PPOAgent:
 
         self.update_count = 0
 
+    def save_checkpoint(self, path: str, iteration: int) -> None:
+        # save a complete checkpoint for resuming training. includes weights,
+        # optimizer, lr, and number of updates. allows for seamless saving of
+        # checkpoints to be used for resuming later, or for experimenting with
+        # fine-tuning.
+
+        torch.save(
+            {
+                "iteration": iteration,
+                "actor": self.actor.state_dict(),
+                "critic": self.critic.state_dict(),
+                "optimizer": self.optimizer.state_dict(),
+                "current_lr": self.current_lr,
+                "update_count": self.update_count,
+            },
+            path,
+        )
+
+    def load_checkpoint(self, path: str) -> int:
+        # fully loads the checkpoint saved by the save_checkpoint() function.
+
+        checkpoint = torch.load(path, map_location=self.device)
+        self.actor.load_state_dict(checkpoint["actor"])
+        self.critic.load_state_dict(checkpoint["critic"])
+        self.optimizer.load_state_dict(checkpoint["optimizer"])
+        self.current_lr = checkpoint["current_lr"]
+        self.update_count = checkpoint.get("update_count", 0)
+        return checkpoint["iteration"]
+
     def select_action(
         self, state_obs: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # selects action based upon an observation and the current policy,
-        # returns action, log_prob, entropy
+        # returns action, log_prob, entropy.
         if not torch.is_tensor(state_obs):
             state_obs = torch.tensor(state_obs, dtype=torch.float, device=self.device)
         else:

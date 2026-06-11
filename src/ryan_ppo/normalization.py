@@ -19,7 +19,7 @@ class ObsNormalization(nn.Module):
 
     def update(self, x: torch.Tensor):
         batch_mean = x.mean(dim=0)
-        batch_var = x.var(dim=0)
+        batch_var = x.var(dim=0, unbiased=False)
         batch_count = x.shape[0]
 
         delta_mean = batch_mean - self.mean

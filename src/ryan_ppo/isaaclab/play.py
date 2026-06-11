@@ -134,7 +134,10 @@ def play(args_cli):
     checkpoint_path = args_cli.checkpoint
     if os.path.exists(checkpoint_path):
         print(f"\nFound existing checkpoint: {checkpoint_path}")
-        agent.actor.load_state_dict(torch.load(checkpoint_path, map_location=device))
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        if isinstance(checkpoint, dict) and "actor" in checkpoint:
+            checkpoint = checkpoint["actor"]
+        agent.actor.load_state_dict(checkpoint)
         print("Loaded checkpoint.")
 
     print("\nStarting evaluation...\n")
@@ -164,11 +167,6 @@ def play(args_cli):
                 )
             else:
                 state_obs = state
-
-            # update normalization statistics
-            if env_config["train"]["use_normalization"] == "True":
-                agent.actor.update_normalization(state_obs)
-                agent.critic.update_normalization(state_obs)
 
             # select action from policy
             with torch.no_grad():
@@ -236,7 +234,6 @@ if __name__ == "__main__":
         default=2000,
         help="Interval between videos (in steps).",
     )
-
     # append AppLauncher cli args
     AppLauncher.add_app_launcher_args(parser)
 

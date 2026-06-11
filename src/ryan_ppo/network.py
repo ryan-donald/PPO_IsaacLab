@@ -4,7 +4,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from rsl_rl.modules import EmpiricalNormalization
+
+from ryan_ppo.normalization import ObsNormalization
+
+# bounds for the policy log-std. the mu for each joint is tanh activated, bounding
+# them to [-1, 1]. this clamping prevents the log-std from becoming too large.
+LOG_STD_MIN = np.log(0.05)
+LOG_STD_MAX = np.log(1.0)
 
 
 class Actor(nn.Module):
@@ -13,8 +19,8 @@ class Actor(nn.Module):
         state_dim: int,
         action_dim: int,
         hidden_dims: list[int] = [64, 64],
-        normalization_object: EmpiricalNormalization = None,
-        std: float = 1.0,
+        normalization_object: ObsNormalization = None,
+        std: float = 0.5,
     ) -> None:
         super(Actor, self).__init__()
 
@@ -52,8 +58,8 @@ class Actor(nn.Module):
 
         for layer in self.hidden_layers:
             x = F.elu(layer(x))
-        mu = self.output_layer(x)
-        std = torch.exp(self.log_std)
+        mu = torch.tanh(self.output_layer(x))
+        std = torch.exp(self.log_std.clamp(LOG_STD_MIN, LOG_STD_MAX))
         return mu, std
 
     def update_normalization(self, obs: torch.Tensor) -> None:
@@ -67,7 +73,7 @@ class Critic(nn.Module):
         self,
         state_dim: int,
         hidden_dims: list[int] = [64, 64],
-        normalization_object: EmpiricalNormalization = None,
+        normalization_object: ObsNormalization = None,
     ) -> None:
         super(Critic, self).__init__()
 
