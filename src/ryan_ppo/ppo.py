@@ -4,7 +4,7 @@ import torch
 import torch.optim as optim
 from torch.distributions import Normal
 
-from ryan_ppo.network import Actor, Critic
+from ryan_ppo.network import LOG_STD_MAX, LOG_STD_MIN, Actor, Critic
 from ryan_ppo.normalization import ObsNormalization
 
 
@@ -24,6 +24,7 @@ class PPOAgent:
         desired_kl: float = 0.01,
         schedule_type: str = "adaptive",
         entropy_coef: float = 0.001,
+        saturation_coef: float = 1e-3,
         use_normalization: bool = True,
     ) -> None:
 
@@ -53,6 +54,7 @@ class PPOAgent:
         self.clip_epsilon = clip_epsilon
         self.max_grad_norm = max_grad_norm
         self.entropy_coef = entropy_coef
+        self.saturation_coef = saturation_coef
         self.value_coef = value_coef
         self.desired_kl = desired_kl
         self.schedule_type = schedule_type
@@ -83,6 +85,7 @@ class PPOAgent:
 
         checkpoint = torch.load(path, map_location=self.device)
         self.actor.load_state_dict(checkpoint["actor"])
+        self.actor.log_std.data.clamp_(LOG_STD_MIN, LOG_STD_MAX)
         self.critic.load_state_dict(checkpoint["critic"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.current_lr = checkpoint["current_lr"]
@@ -169,6 +172,7 @@ class PPOAgent:
 
         mean_kl = 0
         num_updates = 0
+        kl_abort = False
 
         # training loop
         for epoch in range(epochs):
@@ -197,6 +201,7 @@ class PPOAgent:
 
                 # calculate log_probs for current policy
                 mu, std = self.actor(batch_states)
+                pre_tanh = self.actor.pre_tanh
 
                 dist = Normal(mu, std)
                 log_probs = dist.log_prob(batch_actions).sum(dim=-1)
@@ -218,6 +223,10 @@ class PPOAgent:
                     epoch_kl += batch_kl
                     num_updates += 1
 
+                    # kl early stopping per minibatch
+                    if batch_kl > self.desired_kl * 4.0:
+                        kl_abort = True
+
                     if self.schedule_type == "adaptive":
                         if batch_kl > self.desired_kl * 2.0:
                             self.current_lr = max(1e-5, self.current_lr / 1.5)
@@ -225,6 +234,9 @@ class PPOAgent:
                             self.current_lr = min(1e-2, self.current_lr * 1.5)
                         for param_group in self.optimizer.param_groups:
                             param_group["lr"] = self.current_lr
+
+                if kl_abort:
+                    break
 
                 # compute surrogate loss
                 ratios = torch.exp(log_probs - batch_log_probs_old)
@@ -251,6 +263,7 @@ class PPOAgent:
                     actor_loss
                     + self.value_coef * critic_loss
                     - self.entropy_coef * entropy
+                    + self.saturation_coef * pre_tanh.pow(2).mean()
                 )
 
                 # gradient descent step, with a clipped gradient norm
@@ -262,10 +275,13 @@ class PPOAgent:
                     self.max_grad_norm,
                 )
                 self.optimizer.step()
+
+                # clamp log_std post optimizer to keep gradients useful
+                self.actor.log_std.data.clamp_(LOG_STD_MIN, LOG_STD_MAX)
             mean_kl += epoch_kl
 
             mean_epoch_kl = epoch_kl / num_mini_batches
-            if mean_epoch_kl > self.desired_kl * 1.5:
+            if kl_abort or mean_epoch_kl > self.desired_kl * 1.5:
                 break
 
         # average KL divergence over all updates,

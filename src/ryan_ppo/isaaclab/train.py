@@ -427,6 +427,9 @@ def train(args_cli):
             if (update + 1) == args_cli.checkpoint_iter:
                 agent.save_checkpoint(log_path + "checkpoint_pretrain.pth", update + 1)
 
+            if (update + 1) % 500 == 0:
+                agent.save_checkpoint(log_path + "checkpoint_latest.pth", update + 1)
+
     env.close()
     wandb.finish()
     live.stop()

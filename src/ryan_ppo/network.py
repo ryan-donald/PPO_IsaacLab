@@ -58,8 +58,10 @@ class Actor(nn.Module):
 
         for layer in self.hidden_layers:
             x = F.elu(layer(x))
-        mu = torch.tanh(self.output_layer(x))
-        std = torch.exp(self.log_std.clamp(LOG_STD_MIN, LOG_STD_MAX))
+        # stores pre-tanh values, used to calculate the saturation loss in update
+        self.pre_tanh = self.output_layer(x)
+        mu = torch.tanh(self.pre_tanh)
+        std = torch.exp(self.log_std)
         return mu, std
 
     def update_normalization(self, obs: torch.Tensor) -> None:
