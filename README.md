@@ -32,7 +32,7 @@ This implementation supports parameter sweeping via Weights and Biases. To do th
 ## Sim2Real
 Using this package, I have been able to perform Sim2Real transfer of a Reach agent for the open source SO-ARM101 robot. Specifics about that process can be found [here](https://ryan-donald.github.io/portfolio/1-PPO_Sim2Real/), and my script can be found [here](https://github.com/ryan-donald/so101_ppo).
 
-https://github.com/user-attachments/assets/05b79426-c632-4059-a94b-402b9918e99a
+[![PPO SO-ARM101 sim2real](https://img.youtube.com/vi/MzxyW7mrM0s/0.jpg)](https://www.youtube.com/watch?v=MzxyW7mrM0s)
 
 ## Experiment Tracking in Terminal
 With the help of the python package [rich](https://github.com/textualize/rich), I have a display in the terminal which provides information about the currently running experiment, including reward terms, learning parameters, performance, remaining time, and a clickable link to the current WandB run. An example of this can be seen below:
