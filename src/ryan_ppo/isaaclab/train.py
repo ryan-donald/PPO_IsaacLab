@@ -17,9 +17,9 @@ def train(args_cli):
 
         carb.profiler.begin(1, "train_loop")
 
-    import configparser
     import os
     import random
+    import signal
     import time
     from datetime import datetime
 
@@ -32,8 +32,9 @@ def train(args_cli):
     from rich.live import Live
 
     import ryan_tasks  # noqa: F401
+    from ryan_ppo.config import TrainConfig
     from ryan_ppo.ppo import PPOAgent
-    from ryan_ppo.utils import generate_table
+    from ryan_ppo.utils import generate_table, policy_obs
 
     # set device before using it in class instantiation
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -61,35 +62,13 @@ def train(args_cli):
     env.reset()
 
     # get environment-specific training configuration
-    env_config = configparser.ConfigParser()
-    env_config.read(get_cfg_path(args_cli.task))
+    cfg = TrainConfig.from_ini(get_cfg_path(args_cli.task))
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run = wandb.init(project="PPO IsaacLab", name=f"{args_cli.task}_{run_id}")
 
-    learning_rate = float(env_config["train"]["learning_rate"])
-    gamma = float(env_config["train"]["gamma"])
-    num_learning_epochs = int(env_config["train"]["num_learning_epochs"])
-    desired_kl = float(env_config["train"]["desired_kl"])
-    clip_epsilon = float(env_config["train"]["clip_epsilon"])
-
     if args_cli.sweep:
-        if "lr" in wandb.config:
-            learning_rate = wandb.config.lr
-        if "entropy_coef" in wandb.config:
-            pass
-        if "gamma" in wandb.config:
-            gamma = wandb.config.gamma
-        if "num_learning_epochs" in wandb.config:
-            num_learning_epochs = wandb.config.num_learning_epochs
-        if "desired_kl" in wandb.config:
-            desired_kl = wandb.config.desired_kl
-        if "clip_epsilon" in wandb.config:
-            clip_epsilon = wandb.config.clip_epsilon
-
-    num_steps_per_env = int(env_config["train"]["num_steps_per_env"])
-    num_mini_batches = int(env_config["train"]["num_mini_batches"])
-    max_iterations = int(env_config["train"]["max_iterations"])
+        cfg.apply_sweep(wandb.config)
 
     # store state and action dimensions
     if isinstance(env.observation_space, gym.spaces.Dict):
@@ -98,33 +77,30 @@ def train(args_cli):
         state_dim = env.observation_space.shape[1]
     action_dim = env.action_space.shape[1]
 
-    hidden_dims = env_config["policy"]["hidden_dims"]
-    hidden_dims = [int(x) for x in hidden_dims.split(",")]
-
     # initialize PPO agent
     agent = PPOAgent(
         state_dim,
         action_dim,
         device=device,
-        lr=learning_rate,
-        gamma=gamma,
-        hidden_dims=hidden_dims,
-        gae_lambda=float(env_config["train"]["gae_lambda"]),
-        value_coef=float(env_config["train"]["value_coef"]),
-        clip_epsilon=clip_epsilon,
-        max_grad_norm=float(env_config["train"]["max_grad_norm"]),
-        desired_kl=desired_kl,
-        schedule_type=env_config["train"]["schedule_type"],
-        entropy_coef=float(env_config["train"]["entropy_coef"]),
+        lr=cfg.learning_rate,
+        gamma=cfg.gamma,
+        hidden_dims=cfg.hidden_dims,
+        gae_lambda=cfg.gae_lambda,
+        value_coef=cfg.value_coef,
+        clip_epsilon=cfg.clip_epsilon,
+        max_grad_norm=cfg.max_grad_norm,
+        desired_kl=cfg.desired_kl,
+        schedule_type=cfg.schedule_type,
+        entropy_coef=cfg.entropy_coef,
     )
 
     # reset environment
     state, info = env.reset()
     num_envs = env.unwrapped.num_envs
 
-    steps_per_rollout = num_steps_per_env * num_envs  # 24 * num_envs
-    batch_size = steps_per_rollout // num_mini_batches
-    num_steps = num_steps_per_env
+    steps_per_rollout = cfg.num_steps_per_env * num_envs  # 24 * num_envs
+    batch_size = steps_per_rollout // cfg.num_mini_batches
+    num_steps = cfg.num_steps_per_env
     curr_max = -float("inf")
 
     # logging and checkpointing
@@ -136,7 +112,7 @@ def train(args_cli):
     start_iter = 0
     if args_cli.resume:
         start_iter = agent.load_checkpoint(args_cli.resume)
-        env.unwrapped.common_step_counter = start_iter * num_steps_per_env
+        env.unwrapped.common_step_counter = start_iter * cfg.num_steps_per_env
         print(f"Resumed from {args_cli.resume} at iteration {start_iter}.")
 
     # storage for episode rewards and lengths, and other plotting data
@@ -185,6 +161,14 @@ def train(args_cli):
     )
     live.start()
 
+    # with ctrl+c closing the script, the terminal breaks without this.
+    def _on_sigint(signum, frame):
+        live.stop()
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _on_sigint)
+
     start_time = time.perf_counter()
 
     # allocate tensors for storing rollout info
@@ -205,21 +189,14 @@ def train(args_cli):
     historic_episode_lengths = torch.zeros((num_steps, num_envs), device=device)
     historic_term_rewards = torch.zeros((num_steps, num_envs, num_terms), device=device)
 
-    for update in range(start_iter, max_iterations):
+    for update in range(start_iter, cfg.max_iterations):
         rollout_start = time.perf_counter()
         for step in range(num_steps):
             # handle both Dict and Box observation spaces
-            if isinstance(state, dict):
-                state_obs = (
-                    state["policy"]
-                    if "policy" in state
-                    else state[list(state.keys())[0]]
-                )
-            else:
-                state_obs = state
+            state_obs = policy_obs(state)
 
             # update normalization statistics
-            if env_config["train"]["use_normalization"] == "True":
+            if cfg.use_normalization:
                 agent.actor.update_normalization(state_obs)
 
             if args_cli.profile:
@@ -279,16 +256,7 @@ def train(args_cli):
 
         # bootstrap next value for GAE
         with torch.no_grad():
-            if isinstance(state, dict):
-                next_state_obs = (
-                    state["policy"]
-                    if "policy" in state
-                    else state[list(state.keys())[0]]
-                )
-            else:
-                next_state_obs = state
-
-            next_value = agent.critic(next_state_obs).squeeze(-1)
+            next_value = agent.critic(policy_obs(state)).squeeze(-1)
 
         if args_cli.profile:
             carb.profiler.begin(4, "compute_gae")
@@ -313,9 +281,9 @@ def train(args_cli):
             values,
             mus,
             stds,
-            epochs=num_learning_epochs,
+            epochs=cfg.num_learning_epochs,
             batch_size=batch_size,
-            num_mini_batches=num_mini_batches,
+            num_mini_batches=cfg.num_mini_batches,
         )
         update_time = time.perf_counter() - update_start
 
@@ -390,7 +358,9 @@ def train(args_cli):
         perf_stats["Update Time"] = update_time
         perf_stats["episodes"] += num_episodes_completed
         perf_stats["Remaining Time"] = (
-            (max_iterations - (update + 1)) * steps_per_rollout / perf_stats["steps/s"]
+            (cfg.max_iterations - (update + 1))
+            * steps_per_rollout
+            / perf_stats["steps/s"]
         )
 
         train_stats["lr"] = agent.current_lr
@@ -427,18 +397,18 @@ def train(args_cli):
             if (update + 1) == args_cli.checkpoint_iter:
                 agent.save_checkpoint(log_path + "checkpoint_pretrain.pth", update + 1)
 
-            if (update + 1) % 500 == 0:
+            if (update + 1) % 100 == 0:
                 agent.save_checkpoint(log_path + "checkpoint_latest.pth", update + 1)
 
+    live.stop()
     env.close()
     wandb.finish()
-    live.stop()
 
     # save final model
     if args_cli.save:
         torch.save(agent.actor.state_dict(), log_path + "actor_final.pth")
         torch.save(agent.critic.state_dict(), log_path + "critic_final.pth")
-        agent.save_checkpoint(log_path + "checkpoint_final.pth", max_iterations)
+        agent.save_checkpoint(log_path + "checkpoint_final.pth", cfg.max_iterations)
 
     if args_cli.profile:
         carb.profiler.end(1)

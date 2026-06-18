@@ -2,6 +2,13 @@ from rich import box
 from rich.table import Table
 
 
+def policy_obs(state):
+    # returns observation regardless of if it is in a dict or a box.
+    if isinstance(state, dict):
+        return state.get("policy", next(iter(state.values())))
+    return state
+
+
 def generate_table(
     perf_dict: dict,
     train_dict: dict,
