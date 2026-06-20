@@ -65,7 +65,11 @@ def train(args_cli):
     cfg = TrainConfig.from_ini(get_cfg_path(args_cli.task))
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run = wandb.init(project="PPO IsaacLab", name=f"{args_cli.task}_{run_id}")
+    run = wandb.init(
+        project="PPO IsaacLab",
+        name=f"{args_cli.task}_{run_id}",
+        settings={"console": "off"},
+    )
 
     if args_cli.sweep:
         cfg.apply_sweep(wandb.config)
@@ -399,6 +403,15 @@ def train(args_cli):
 
             if (update + 1) % 100 == 0:
                 agent.save_checkpoint(log_path + "checkpoint_latest.pth", update + 1)
+
+            if (update + 1) == 5000:
+                agent.save_checkpoint(log_path + "checkpoint_5000.pth", update + 1)
+
+            if (update + 1) == 7500:
+                agent.save_checkpoint(log_path + "checkpoint_7500.pth", update + 1)
+
+            if (update + 1) == 10000:
+                agent.save_checkpoint(log_path + "checkpoint_10000.pth", update + 1)
 
     live.stop()
     env.close()
