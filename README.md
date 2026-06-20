@@ -5,7 +5,7 @@
 # PPO for IsaacLab
 This is a repository containing my implementation of the Proximal Policy Optimizatino (PPO) Reinforcement Learning algorithm, specifically for use in Nvidia's IsaacLab. I initially developed and tested this algorithm within gymnasium, and then moved to IsaacLab. The base algorithm is not specific to the environment, and will work with any environment as long as the batch data is in the expected format.
 
-https://github.com/user-attachments/assets/a2094aaf-6c94-455e-8e7a-27d514ef5b38
+<img width="720" height="405" alt="so101_reach" src="https://github.com/user-attachments/assets/a04e37d7-f6f0-4f09-af24-27157c920124" />
 
 # Quickstart
 To use this package, follow the steps below:
@@ -32,7 +32,7 @@ This implementation supports parameter sweeping via Weights and Biases. To do th
 ## Sim2Real
 Using this package, I have been able to perform Sim2Real transfer of a Reach agent for the open source SO-ARM101 robot. Specifics about that process can be found [here](https://ryan-donald.github.io/portfolio/1-PPO_Sim2Real/), and my script can be found [here](https://github.com/ryan-donald/so101_ppo).
 
-[![PPO SO-ARM101 sim2real](https://img.youtube.com/vi/MzxyW7mrM0s/0.jpg)](https://www.youtube.com/watch?v=MzxyW7mrM0s)
+[![PPO SO-ARM101 sim2real](https://img.youtube.com/vi/MzxyW7mrM0s/maxresdefault.jpg)](https://www.youtube.com/watch?v=MzxyW7mrM0s)
 
 ## Experiment Tracking in Terminal
 With the help of the python package [rich](https://github.com/textualize/rich), I have a display in the terminal which provides information about the currently running experiment, including reward terms, learning parameters, performance, remaining time, and a clickable link to the current WandB run. An example of this can be seen below:
