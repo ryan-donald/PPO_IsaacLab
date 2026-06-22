@@ -34,6 +34,8 @@ def train(args_cli):
     import ryan_tasks  # noqa: F401
     from ryan_ppo.config import TrainConfig
     from ryan_ppo.ppo import PPOAgent
+    from ryan_ppo.storage import RolloutStorage
+    from ryan_ppo.tracking import EpisodeTracker
     from ryan_ppo.utils import generate_table, policy_obs
 
     # set device before using it in class instantiation
@@ -119,25 +121,13 @@ def train(args_cli):
         env.unwrapped.common_step_counter = start_iter * cfg.num_steps_per_env
         print(f"Resumed from {args_cli.resume} at iteration {start_iter}.")
 
-    # storage for episode rewards and lengths, and other plotting data
-    current_episode_rewards = torch.zeros(num_envs, device=device)
-    current_episode_lengths = torch.zeros(num_envs, device=device)
-
     # per-term reward logging
     reward_manager = env.unwrapped.reward_manager
     term_names = reward_manager.active_terms
-    num_terms = len(term_names)
-    current_term_rewards = torch.zeros(num_envs, num_terms, device=device)
 
-    # track last known metrics for forward-filling when
-    # rollouts have zero completed episodes
-    num_episodes_completed = 0
-    last_avg_reward = 0.0
-    last_min_reward = 0.0
-    last_max_reward = 0.0
-    last_std_reward = 0.0
-    last_avg_entropy = 0.0
-    last_term_rewards = {name: 0.0 for name in term_names}
+    # tracks episode/term rewards across each rollout, forward-filling reward stats
+    # when a rollout has zero completed episodes.
+    tracker = EpisodeTracker(num_envs, term_names, device)
 
     perf_stats = {
         "steps": 0,
@@ -159,7 +149,11 @@ def train(args_cli):
 
     live = Live(
         generate_table(
-            perf_stats, train_stats, last_term_rewards, args_cli.task, run_url
+            perf_stats,
+            train_stats,
+            {name: 0.0 for name in term_names},
+            args_cli.task,
+            run_url,
         ),
         refresh_per_second=4,
     )
@@ -175,23 +169,8 @@ def train(args_cli):
 
     start_time = time.perf_counter()
 
-    # allocate tensors for storing rollout info
-    states = torch.zeros((num_steps, num_envs, state_dim)).to(device)
-    actions = torch.zeros((num_steps, num_envs, action_dim), dtype=torch.float).to(
-        device
-    )
-    log_probs = torch.zeros((num_steps, num_envs)).to(device)
-    rewards = torch.zeros((num_steps, num_envs)).to(device)
-    dones = torch.zeros((num_steps, num_envs)).to(device)
-    values = torch.zeros((num_steps, num_envs)).to(device)
-    entropies = torch.zeros((num_steps, num_envs)).to(device)
-    mus = torch.zeros((num_steps, num_envs, action_dim)).to(device)
-    stds = torch.zeros((num_steps, num_envs, action_dim)).to(device)
-
-    # preallocate history buffers for calculating episode metrics outside the step loop
-    historic_episode_rewards = torch.zeros((num_steps, num_envs), device=device)
-    historic_episode_lengths = torch.zeros((num_steps, num_envs), device=device)
-    historic_term_rewards = torch.zeros((num_steps, num_envs, num_terms), device=device)
+    # rollout buffers for one PPO iteration.
+    storage = RolloutStorage(num_steps, num_envs, state_dim, action_dim, device)
 
     for update in range(start_iter, cfg.max_iterations):
         rollout_start = time.perf_counter()
@@ -221,40 +200,38 @@ def train(args_cli):
 
             if args_cli.profile:
                 carb.profiler.end(3)
+
+            # store steps where envs finished, either terminated or truncated
             done = torch.logical_or(terminated, truncated)
 
+            # bootstrap the reward for steps where env terminated, without this the
+            # agent sees a lower reward than if non-terminal, and can avoid a state
+            # more than it should
             reward = reward + agent.gamma * value * truncated.float()
 
-            # store rollout data in tensors
-            states[step] = state_obs
-            actions[step] = action.to(device)
-            log_probs[step] = log_prob.to(device)
-            rewards[step] = reward.to(device)
-            dones[step] = done.float().to(device)
-            values[step] = value.to(device)
-            entropies[step] = entropy.to(device)
-            mus[step] = mu.to(device)
-            stds[step] = std.to(device)
+            # store done values as floats, used in GAE computation later
+            done_f = done.float()
 
+            # store rollout data
+            storage.add(
+                step,
+                state=state_obs,
+                action=action,
+                log_prob=log_prob,
+                reward=reward,
+                done=done_f,
+                value=value,
+                entropy=entropy,
+                mu=mu,
+                std=std,
+            )
+
+            # update state for next step
             state = next_state
 
-            # accumulate episode rewards and lengths
-            current_episode_rewards += rewards[step]
-            current_episode_lengths += 1
-
-            # accumulate per-term rewards: _step_reward shape is (num_envs, num_terms)
-            current_term_rewards += reward_manager._step_reward.detach()
-
-            # stores current episode data for finished episodes
-            historic_episode_rewards[step] = current_episode_rewards
-            historic_episode_lengths[step] = current_episode_lengths
-            historic_term_rewards[step] = current_term_rewards
-
-            # resets the current episode data tracking for finished episodes
-            not_done_mask = 1.0 - dones[step]
-            current_episode_rewards *= not_done_mask
-            current_episode_lengths *= not_done_mask
-            current_term_rewards *= not_done_mask.unsqueeze(-1)
+            # accumulate episode/term rewards (per-term _step_reward is
+            # (num_envs, num_terms)).
+            tracker.record_step(reward, done_f, reward_manager._step_reward.detach())
 
         rollout_time = time.perf_counter() - rollout_start
 
@@ -266,7 +243,9 @@ def train(args_cli):
             carb.profiler.begin(4, "compute_gae")
 
         # compute GAE advantages and returns
-        advantages, returns = agent.compute_gae(rewards, values, dones, next_value)
+        advantages, returns = agent.compute_gae(
+            storage.rewards, storage.values, storage.dones, next_value
+        )
 
         if args_cli.profile:
             carb.profiler.end(4)
@@ -277,14 +256,14 @@ def train(args_cli):
         # update actor and critic networks
         update_start = time.perf_counter()
         mean_kl = agent.update(
-            states,
-            actions,
-            log_probs,
+            storage.states,
+            storage.actions,
+            storage.log_probs,
             returns,
             advantages,
-            values,
-            mus,
-            stds,
+            storage.values,
+            storage.mus,
+            storage.stds,
             epochs=cfg.num_learning_epochs,
             batch_size=batch_size,
             num_mini_batches=cfg.num_mini_batches,
@@ -297,70 +276,36 @@ def train(args_cli):
         if args_cli.profile:
             carb.profiler.begin(6, "logging/cli")
 
-        # logging, minimize GPU -> CPU transfer to improve performance
-        done_mask = dones.bool()
-        num_completed = done_mask.sum().item()
-
-        if num_completed > 0:
-            # returns only values for finished episodes
-            completed_rewards = historic_episode_rewards[done_mask]
-            num_episodes_completed = completed_rewards.numel()
-
-            # calculates stats in pytorch on GPU, then move single value to CPU
-            avg_reward = completed_rewards.mean().item()
-            min_reward = completed_rewards.min().item()
-            max_reward = completed_rewards.max().item()
-            std_reward = completed_rewards.std().item() if num_completed > 1 else 0.0
-
-            avg_entropy = entropies.mean().item()
-
-            # update trackers
-            last_avg_reward = avg_reward
-            last_min_reward = min_reward
-            last_max_reward = max_reward
-            last_std_reward = std_reward
-
-            last_avg_entropy = avg_entropy
-
-            for t_idx, t_name in enumerate(term_names):
-                completed_terms = historic_term_rewards[:, :, t_idx][done_mask]
-                avg_term = completed_terms.mean().item()
-                last_term_rewards[t_name] = avg_term
-
-        else:
-            # forward-fill if no new episodes finished
-            avg_reward = last_avg_reward
-            min_reward = last_min_reward
-            max_reward = last_max_reward
-            std_reward = last_std_reward
-
-            avg_entropy = last_avg_entropy
+        # reduce rollout into episode statistics (reward stats forward-filled if no
+        # episodes completed this rollout; num_episodes is zero in that case).
+        stats = tracker.summarize(storage.entropies)
 
         logging_dict = {
-            "train/avg_reward": avg_reward,
-            "train/min_reward": min_reward,
-            "train/max_reward": max_reward,
-            "train/std_reward": std_reward,
+            "train/avg_reward": stats.avg_reward,
+            "train/min_reward": stats.min_reward,
+            "train/max_reward": stats.max_reward,
+            "train/std_reward": stats.std_reward,
             "train/kl": mean_kl,
             "train/lr": agent.current_lr,
-            "train/episodes": num_episodes_completed,
-            "train/avg_entropy": avg_entropy,
+            "train/episodes": stats.num_episodes,
+            "train/avg_entropy": stats.avg_entropy,
         }
 
         for t_name in term_names:
-            logging_dict[f"rewards/{t_name}"] = last_term_rewards[t_name]
+            logging_dict[f"rewards/{t_name}"] = stats.term_rewards[t_name]
 
         wandb.log(logging_dict, step=update)
 
-        last_term_rewards["Mean Reward"] = avg_reward
-        last_term_rewards["Max Reward"] = max_reward
+        # aggregate rows for the TUI (added after wandb.log so they aren't logged).
+        stats.term_rewards["Mean Reward"] = stats.avg_reward
+        stats.term_rewards["Max Reward"] = stats.max_reward
 
         perf_stats["steps"] += steps_per_rollout
         perf_stats["Runtime"] = time.perf_counter() - start_time
         perf_stats["steps/s"] = perf_stats["steps"] / perf_stats["Runtime"]
         perf_stats["Rollout Time"] = rollout_time
         perf_stats["Update Time"] = update_time
-        perf_stats["episodes"] += num_episodes_completed
+        perf_stats["episodes"] += stats.num_episodes
         perf_stats["Remaining Time"] = (
             (cfg.max_iterations - (update + 1))
             * steps_per_rollout
@@ -373,7 +318,7 @@ def train(args_cli):
 
         live.update(
             generate_table(
-                perf_stats, train_stats, last_term_rewards, args_cli.task, run_url
+                perf_stats, train_stats, stats.term_rewards, args_cli.task, run_url
             )
         )
 
@@ -382,8 +327,8 @@ def train(args_cli):
 
         # save best model when reward improves
         if args_cli.save:
-            if avg_reward > curr_max:
-                curr_max = avg_reward
+            if stats.avg_reward > curr_max:
+                curr_max = stats.avg_reward
                 torch.save(agent.actor.state_dict(), log_path + "actor_best.pth")
                 torch.save(agent.critic.state_dict(), log_path + "critic_best.pth")
 
