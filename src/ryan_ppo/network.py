@@ -12,6 +12,11 @@ from ryan_ppo.normalization import ObsNormalization
 LOG_STD_MIN = np.log(0.05)
 LOG_STD_MAX = np.log(1.0)
 
+# currently training with a binary gripper action, and I am using this to prevent
+# std collapsing very far from the mean for the gripper.
+# I don't think this is necessary, but I am using it for testing currently.
+GRIPPER_LOG_STD_MIN = np.log(0.3)
+
 
 class Actor(nn.Module):
     def __init__(

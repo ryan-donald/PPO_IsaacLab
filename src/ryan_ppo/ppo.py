@@ -4,8 +4,22 @@ import torch
 import torch.optim as optim
 from torch.distributions import Normal
 
-from ryan_ppo.network import LOG_STD_MAX, LOG_STD_MIN, Actor, Critic
+from ryan_ppo.network import (
+    GRIPPER_LOG_STD_MIN,
+    LOG_STD_MAX,
+    LOG_STD_MIN,
+    Actor,
+    Critic,
+)
 from ryan_ppo.normalization import ObsNormalization
+
+KL_ABORT_FACTOR = 4.0
+KL_LR_DECREASE_FACTOR = 2.0
+KL_LR_INCREASE_FACTOR = 2.0
+KL_EPOCH_STOP_FACTOR = 1.5
+LR_ADJUST_RATIO = 1.5
+MIN_LR = 1e-5
+MAX_LR = 1e-2
 
 
 class PPOAgent:
@@ -39,6 +53,11 @@ class PPOAgent:
             device
         )
         self.critic = Critic(state_dim, hidden_dims, self.obs_normalizer).to(device)
+
+        # per-dim lower bound on log_std (see GRIPPER_LOG_STD_MIN). gripper is the
+        # last action dim and gets a higher floor so its exploration never collapses.
+        self.log_std_min = torch.full((action_dim,), float(LOG_STD_MIN), device=device)
+        self.log_std_min[-1] = float(GRIPPER_LOG_STD_MIN)
 
         self.actor_params = list(self.actor.parameters())
         self.critic_params = list(self.critic.parameters())
@@ -85,7 +104,10 @@ class PPOAgent:
 
         checkpoint = torch.load(path, map_location=self.device)
         self.actor.load_state_dict(checkpoint["actor"])
-        self.actor.log_std.data.clamp_(LOG_STD_MIN, LOG_STD_MAX)
+        self.actor.log_std.data.clamp_(max=LOG_STD_MAX)
+        torch.maximum(
+            self.actor.log_std.data, self.log_std_min, out=self.actor.log_std.data
+        )
         self.critic.load_state_dict(checkpoint["critic"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.current_lr = checkpoint["current_lr"]
@@ -94,9 +116,9 @@ class PPOAgent:
 
     def select_action(
         self, state_obs: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # selects action based upon an observation and the current policy,
-        # returns action, log_prob, entropy.
+        # returns action, log_prob, entropy, mu, std.
         if not torch.is_tensor(state_obs):
             state_obs = torch.tensor(state_obs, dtype=torch.float, device=self.device)
         else:
@@ -119,7 +141,7 @@ class PPOAgent:
         dones: torch.Tensor,
         next_value: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        # computes normalized generalized advantage estimates (GAE)
+        # computes generalized advantage estimates (GAE)
 
         values_extended = torch.cat([values, next_value.unsqueeze(0)], dim=0)
 
@@ -224,14 +246,18 @@ class PPOAgent:
                     num_updates += 1
 
                     # kl early stopping per minibatch
-                    if batch_kl > self.desired_kl * 4.0:
+                    if batch_kl > self.desired_kl * KL_ABORT_FACTOR:
                         kl_abort = True
 
                     if self.schedule_type == "adaptive":
-                        if batch_kl > self.desired_kl * 2.0:
-                            self.current_lr = max(1e-5, self.current_lr / 1.5)
-                        elif batch_kl < self.desired_kl / 2.0 and batch_kl > 0.0:
-                            self.current_lr = min(1e-2, self.current_lr * 1.5)
+                        if batch_kl > self.desired_kl * KL_LR_DECREASE_FACTOR:
+                            self.current_lr = max(
+                                MIN_LR, self.current_lr / LR_ADJUST_RATIO
+                            )
+                        elif 0.0 < batch_kl < self.desired_kl / KL_LR_INCREASE_FACTOR:
+                            self.current_lr = min(
+                                MAX_LR, self.current_lr * LR_ADJUST_RATIO
+                            )
                         for param_group in self.optimizer.param_groups:
                             param_group["lr"] = self.current_lr
 
@@ -277,11 +303,16 @@ class PPOAgent:
                 self.optimizer.step()
 
                 # clamp log_std post optimizer to keep gradients useful
-                self.actor.log_std.data.clamp_(LOG_STD_MIN, LOG_STD_MAX)
+                self.actor.log_std.data.clamp_(max=LOG_STD_MAX)
+                torch.maximum(
+                    self.actor.log_std.data,
+                    self.log_std_min,
+                    out=self.actor.log_std.data,
+                )
             mean_kl += epoch_kl
 
             mean_epoch_kl = epoch_kl / num_mini_batches
-            if kl_abort or mean_epoch_kl > self.desired_kl * 1.5:
+            if kl_abort or mean_epoch_kl > self.desired_kl * KL_EPOCH_STOP_FACTOR:
                 break
 
         # average KL divergence over all updates,
