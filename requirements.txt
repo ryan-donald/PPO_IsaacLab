@@ -1,4 +1,0 @@
-torch >= 2.7.0
-numpy >= 1.26.4
-rsl-rl-lib
-pytest

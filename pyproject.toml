@@ -1,18 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+
 [project]
 name = "ryan-ppo"
-version = "0.1.0"
+version = "1.0.0"
 authors = [
   { name="Ryan Donald" }
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
   "torch >= 2.7.0",
   "numpy >= 1.26.4",
   "pytest",
+  "rich",
+  "wandb",
+  "gymnasium",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
