@@ -21,6 +21,7 @@ class TrainConfig:
     max_iterations: int
     use_normalization: bool
     hidden_dims: list[int]
+    saturation_coef: float = 1e-3
 
     @classmethod
     def from_ini(cls, path):
@@ -43,6 +44,7 @@ class TrainConfig:
             max_iterations=train.getint("max_iterations"),
             use_normalization=train.getboolean("use_normalization"),
             hidden_dims=[int(x) for x in config["policy"]["hidden_dims"].split(",")],
+            saturation_coef=train.getfloat("saturation_coef", fallback=1e-3),
         )
 
     def apply_sweep(self, sweep):

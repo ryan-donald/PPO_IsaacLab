@@ -4,6 +4,7 @@ import torch
 import torch.optim as optim
 from torch.distributions import Normal
 
+from ryan_ppo.config import TrainConfig
 from ryan_ppo.network import (
     GRIPPER_LOG_STD_MIN,
     LOG_STD_MAX,
@@ -27,32 +28,21 @@ class PPOAgent:
         self,
         state_dim: int,
         action_dim: int,
+        cfg: TrainConfig,
         device: torch.device = torch.device("cpu"),
-        lr: float = 1e-3,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        value_coef: float = 0.5,
-        clip_epsilon: float = 0.2,
-        hidden_dims: list[int] = [64, 64],
-        max_grad_norm: float = 1.0,
-        desired_kl: float = 0.01,
-        schedule_type: str = "adaptive",
-        entropy_coef: float = 0.001,
-        saturation_coef: float = 1e-3,
-        use_normalization: bool = True,
     ) -> None:
 
-        if use_normalization:
+        if cfg.use_normalization:
             self.obs_normalizer = ObsNormalization(state_dim)
         else:
             self.obs_normalizer = None
 
         self.device = device
 
-        self.actor = Actor(state_dim, action_dim, hidden_dims, self.obs_normalizer).to(
-            device
-        )
-        self.critic = Critic(state_dim, hidden_dims, self.obs_normalizer).to(device)
+        self.actor = Actor(
+            state_dim, action_dim, cfg.hidden_dims, self.obs_normalizer
+        ).to(device)
+        self.critic = Critic(state_dim, cfg.hidden_dims, self.obs_normalizer).to(device)
 
         # per-dim lower bound on log_std (see GRIPPER_LOG_STD_MIN). gripper is the
         # last action dim and gets a higher floor so its exploration never collapses.
@@ -62,22 +52,24 @@ class PPOAgent:
         self.actor_params = list(self.actor.parameters())
         self.critic_params = list(self.critic.parameters())
 
-        self.optimizer = optim.Adam(self.actor_params + self.critic_params, lr=lr)
+        self.optimizer = optim.Adam(
+            self.actor_params + self.critic_params, lr=cfg.learning_rate
+        )
 
         self.actor = torch.compile(self.actor)
         self.critic = torch.compile(self.critic)
 
         # hyperparameters
-        self.gamma = gamma
-        self.gae_lambda = gae_lambda
-        self.clip_epsilon = clip_epsilon
-        self.max_grad_norm = max_grad_norm
-        self.entropy_coef = entropy_coef
-        self.saturation_coef = saturation_coef
-        self.value_coef = value_coef
-        self.desired_kl = desired_kl
-        self.schedule_type = schedule_type
-        self.current_lr = lr
+        self.gamma = cfg.gamma
+        self.gae_lambda = cfg.gae_lambda
+        self.clip_epsilon = cfg.clip_epsilon
+        self.max_grad_norm = cfg.max_grad_norm
+        self.entropy_coef = cfg.entropy_coef
+        self.saturation_coef = cfg.saturation_coef
+        self.value_coef = cfg.value_coef
+        self.desired_kl = cfg.desired_kl
+        self.schedule_type = cfg.schedule_type
+        self.current_lr = cfg.learning_rate
 
         self.update_count = 0
 

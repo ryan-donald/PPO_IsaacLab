@@ -84,21 +84,7 @@ def train(args_cli):
     action_dim = env.action_space.shape[1]
 
     # initialize PPO agent
-    agent = PPOAgent(
-        state_dim,
-        action_dim,
-        device=device,
-        lr=cfg.learning_rate,
-        gamma=cfg.gamma,
-        hidden_dims=cfg.hidden_dims,
-        gae_lambda=cfg.gae_lambda,
-        value_coef=cfg.value_coef,
-        clip_epsilon=cfg.clip_epsilon,
-        max_grad_norm=cfg.max_grad_norm,
-        desired_kl=cfg.desired_kl,
-        schedule_type=cfg.schedule_type,
-        entropy_coef=cfg.entropy_coef,
-    )
+    agent = PPOAgent(state_dim, action_dim, cfg, device=device)
 
     # reset environment
     state, info = env.reset()

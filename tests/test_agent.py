@@ -1,6 +1,30 @@
 import torch
 
+from ryan_ppo.config import TrainConfig
 from ryan_ppo.ppo import PPOAgent
+
+
+def make_agent(state_dim, action_dim, hidden_dims):
+    # builds an agent with the defaults the constructor used before TrainConfig
+    # was folded in, so test behavior is unchanged.
+    cfg = TrainConfig(
+        learning_rate=1e-3,
+        gamma=0.99,
+        gae_lambda=0.95,
+        value_coef=0.5,
+        clip_epsilon=0.2,
+        max_grad_norm=1.0,
+        desired_kl=0.01,
+        entropy_coef=0.001,
+        schedule_type="adaptive",
+        num_learning_epochs=4,
+        num_steps_per_env=24,
+        num_mini_batches=4,
+        max_iterations=1,
+        use_normalization=True,
+        hidden_dims=hidden_dims,
+    )
+    return PPOAgent(state_dim, action_dim, cfg)
 
 
 def test_agent_init():
@@ -10,7 +34,7 @@ def test_agent_init():
     hidden_dims = [2, 2]
     batch_size = 8
 
-    agent = PPOAgent(state_dim, action_dim, hidden_dims=hidden_dims)
+    agent = make_agent(state_dim, action_dim, hidden_dims)
 
     random_input = torch.randn(batch_size, state_dim)
 
@@ -39,7 +63,7 @@ def test_select_action():
     hidden_dims = [2, 2]
     batch_size = 8
 
-    agent = PPOAgent(state_dim, action_dim, hidden_dims=hidden_dims)
+    agent = make_agent(state_dim, action_dim, hidden_dims)
 
     random_input = torch.randn(batch_size, state_dim)
 
@@ -64,7 +88,7 @@ def test_compute_gae():
     num_steps = 4
     num_envs = 2
 
-    agent = PPOAgent(state_dim, action_dim, hidden_dims=hidden_dims)
+    agent = make_agent(state_dim, action_dim, hidden_dims)
 
     random_rewards = torch.tensor(
         [[1.1000, 0.7000], [0.7000, 0.1000], [0.0000, 0.0000], [0.2000, -0.9000]]
@@ -119,7 +143,7 @@ def test_update():
     hidden_dims = [2, 2]
     batch_size = 8
 
-    agent = PPOAgent(state_dim, action_dim, hidden_dims=hidden_dims)
+    agent = make_agent(state_dim, action_dim, hidden_dims)
 
     random_states = torch.randn(batch_size, state_dim)
     random_actions = torch.randn(batch_size, action_dim)
