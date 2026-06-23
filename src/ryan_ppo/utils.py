@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from rich import box
 from rich.table import Table
 
@@ -7,6 +9,16 @@ def policy_obs(state):
     if isinstance(state, dict):
         return state.get("policy", next(iter(state.values())))
     return state
+
+
+def get_cfg_path(task):
+    current_file_path = Path(__file__).resolve()
+    project_root = current_file_path.parents[2]
+    ini_file_path = project_root / "cfg" / f"{task}.ini"
+    if not ini_file_path.exists():
+        raise FileNotFoundError(f"Configuration file not found at: {ini_file_path}")
+
+    return ini_file_path
 
 
 def generate_table(

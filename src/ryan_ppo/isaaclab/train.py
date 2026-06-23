@@ -36,7 +36,7 @@ def train(args_cli):
     from ryan_ppo.ppo import PPOAgent
     from ryan_ppo.storage import RolloutStorage
     from ryan_ppo.tracking import EpisodeTracker
-    from ryan_ppo.utils import generate_table, policy_obs
+    from ryan_ppo.utils import generate_table, get_cfg_path, policy_obs
 
     # set device before using it in class instantiation
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -358,18 +358,6 @@ def train(args_cli):
         carb.profiler.end(1)
 
     simulation_app.close()
-
-
-def get_cfg_path(task):
-    from pathlib import Path
-
-    current_file_path = Path(__file__).resolve()
-    project_root = current_file_path.parents[3]
-    ini_file_path = project_root / "cfg" / f"{task}.ini"
-    if not ini_file_path.exists():
-        raise FileNotFoundError(f"Configuration file not found at: {ini_file_path}")
-
-    return ini_file_path
 
 
 if __name__ == "__main__":

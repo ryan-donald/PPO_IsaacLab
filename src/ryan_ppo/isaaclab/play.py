@@ -1,16 +1,21 @@
 import argparse
-from datetime import datetime
 
 from isaaclab.app import AppLauncher
 
 
 def play(args_cli):
-    # launch omniverse app
-    AppLauncher(args_cli)
+    # video recording uses rgb_array rendering, which requires cameras to be
+    # enabled before the app launches (otherwise the viewport/video are blank/white)
+    if args_cli.video:
+        args_cli.enable_cameras = True
 
-    import configparser
+    # launch omniverse app
+    app_launcher = AppLauncher(args_cli)
+    simulation_app = app_launcher.app
+
     import os
     import random
+    from datetime import datetime
 
     import gymnasium as gym
     import numpy as np
@@ -18,7 +23,9 @@ def play(args_cli):
     from isaaclab_tasks.utils import parse_env_cfg
 
     import ryan_tasks  # noqa: F401
+    from ryan_ppo.config import TrainConfig
     from ryan_ppo.ppo import PPOAgent
+    from ryan_ppo.utils import get_cfg_path, policy_obs
 
     # set device before using it in class instantiation
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -67,19 +74,7 @@ def play(args_cli):
     env.reset()
 
     # get environment-specific training configuration
-    # env_config = EnvConfig(args_cli)
-    env_config = configparser.ConfigParser()
-    env_config.read(get_cfg_path(args_cli.task))
-
-    learning_rate = float(env_config["train"]["learning_rate"])
-    gamma = float(env_config["train"]["gamma"])
-    num_learning_epochs = int(env_config["train"]["num_learning_epochs"])
-    desired_kl = float(env_config["train"]["gamma"])
-    clip_epsilon = float(env_config["train"]["gamma"])
-
-    num_steps_per_env = int(env_config["train"]["num_steps_per_env"])
-    num_mini_batches = int(env_config["train"]["num_mini_batches"])
-    max_iterations = int(env_config["train"]["max_iterations"])
+    cfg = TrainConfig.from_ini(get_cfg_path(args_cli.task))
 
     # store state and action dimensions
     if isinstance(env.observation_space, gym.spaces.Dict):
@@ -88,45 +83,15 @@ def play(args_cli):
         state_dim = env.observation_space.shape[1]
     action_dim = env.action_space.shape[1]
 
-    hidden_dims = env_config["policy"]["hidden_dims"]
-    hidden_dims = [int(x) for x in hidden_dims.split(",")]
-
     # initialize PPO agent
-    agent = PPOAgent(
-        state_dim,
-        action_dim,
-        device=device,
-        lr=learning_rate,
-        gamma=gamma,
-        hidden_dims=hidden_dims,
-        gae_lambda=float(env_config["train"]["gae_lambda"]),
-        value_coef=float(env_config["train"]["value_coef"]),
-        clip_epsilon=clip_epsilon,
-        max_grad_norm=float(env_config["train"]["max_grad_norm"]),
-        desired_kl=desired_kl,
-        schedule_type=env_config["train"]["schedule_type"],
-        entropy_coef=float(env_config["train"]["entropy_coef"]),
-    )
+    agent = PPOAgent(state_dim, action_dim, cfg, device=device)
+    agent.actor.eval()
 
     # reset environment
     state, info = env.reset()
     num_envs = env.unwrapped.num_envs
 
-    steps_per_rollout = num_steps_per_env * num_envs  # 24 * num_envs
-    batch_size = steps_per_rollout // num_mini_batches
-    num_steps = num_steps_per_env
-    -float("inf")
-
-    # print training configuration
-    print("Training configuration:")
-    print(f"  Num environments: {num_envs}")
-    print(f"  Steps per env per rollout: {num_steps_per_env}")
-    print(f"  Total steps per rollout: {steps_per_rollout}")
-    print(f"  Mini-batches: {num_mini_batches}")
-    print(f"  Batch size: {batch_size}")
-    print(f"  Learning epochs: {num_learning_epochs}")
-    print(f"  Max iterations: {max_iterations}")
-    print(f"  Total timesteps: {max_iterations * steps_per_rollout:,}")
+    print(f"Evaluating with {num_envs} environments.")
 
     # logging and checkpointing
     # log_path = f"ryan_logs/{args_cli.task}/"
@@ -142,60 +107,19 @@ def play(args_cli):
 
     print("\nStarting evaluation...\n")
 
-    # storage for episode rewards and lengths, and other plotting data
-    current_episode_rewards = torch.zeros(num_envs, device=device)
-    current_episode_lengths = torch.zeros(num_envs, device=device)
+    for step in range(args_cli.eval_steps):
+        # handle both Dict and Box observation spaces
+        state_obs = policy_obs(state)
 
-    for update in range(max_iterations):
-        torch.zeros((num_steps, num_envs, state_dim)).to(device)
-        torch.zeros((num_steps, num_envs, action_dim), dtype=torch.float).to(device)
-        torch.zeros((num_steps, num_envs)).to(device)
-        rewards = torch.zeros((num_steps, num_envs)).to(device)
-        dones = torch.zeros((num_steps, num_envs)).to(device)
-        torch.zeros((num_steps, num_envs)).to(device)
-        torch.zeros((num_steps, num_envs)).to(device)
-        torch.zeros((num_steps, num_envs, action_dim)).to(device)
-        torch.zeros((num_steps, num_envs, action_dim)).to(device)
+        # deterministic (mean) action from the policy
+        with torch.no_grad():
+            mu, _ = agent.actor(state_obs)
 
-        for step in range(num_steps):
-            # handle both Dict and Box observation spaces
-            if isinstance(state, dict):
-                state_obs = (
-                    state["policy"]
-                    if "policy" in state
-                    else state[list(state.keys())[0]]
-                )
-            else:
-                state_obs = state
-
-            # select action from policy
-            with torch.no_grad():
-                mu, std = agent.actor(state_obs)
-
-            # take step in environment
-            next_state, reward, terminated, truncated, info = env.step(mu)
-
-            state = next_state
-
-            # accumulate episode rewards and lengths
-            current_episode_rewards += rewards[step]
-            current_episode_lengths += 1
-
-            dones[step].bool()
+        # step the environment with the deterministic action
+        state, _, _, _, _ = env.step(mu)
 
     env.close()
-
-
-def get_cfg_path(task):
-    from pathlib import Path
-
-    current_file_path = Path(__file__).resolve()
-    project_root = current_file_path.parents[3]
-    ini_file_path = project_root / "cfg" / f"{args_cli.task}.ini"
-    if not ini_file_path.exists():
-        raise FileNotFoundError(f"Configuration file not found at: {ini_file_path}")
-
-    return ini_file_path
+    simulation_app.close()
 
 
 if __name__ == "__main__":
@@ -233,6 +157,12 @@ if __name__ == "__main__":
         type=int,
         default=2000,
         help="Interval between videos (in steps).",
+    )
+    parser.add_argument(
+        "--eval_steps",
+        type=int,
+        default=2000,
+        help="Number of steps to run the policy for.",
     )
     # append AppLauncher cli args
     AppLauncher.add_app_launcher_args(parser)
