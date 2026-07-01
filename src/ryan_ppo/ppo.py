@@ -44,10 +44,11 @@ class PPOAgent:
         ).to(device)
         self.critic = Critic(state_dim, cfg.hidden_dims, self.obs_normalizer).to(device)
 
-        # per-dim lower bound on log_std (see GRIPPER_LOG_STD_MIN). gripper is the
-        # last action dim and gets a higher floor so its exploration never collapses.
+        # per-dim lower bound on log_std. only tasks whose last action dim is a
+        # binary gripper raise that dim's floor
         self.log_std_min = torch.full((action_dim,), float(LOG_STD_MIN), device=device)
-        self.log_std_min[-1] = float(GRIPPER_LOG_STD_MIN)
+        if cfg.has_gripper_action:
+            self.log_std_min[-1] = float(GRIPPER_LOG_STD_MIN)
 
         self.actor_params = list(self.actor.parameters())
         self.critic_params = list(self.critic.parameters())
