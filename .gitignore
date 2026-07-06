@@ -1,6 +1,10 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
 ppo_logs/
 logs/
 wandb/
+.venv/
+.ruff_cache/
+.pytest_cache/

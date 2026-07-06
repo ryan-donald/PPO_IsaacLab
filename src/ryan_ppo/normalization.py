@@ -8,7 +8,7 @@ class ObsNormalization(nn.Module):
     Mean and Variance for a distribution.
     """
 
-    def __init__(self, state_dim: torch.Tensor, epsilon: float = 1e-5):
+    def __init__(self, state_dim: int, epsilon: float = 1e-5):
         super().__init__()
 
         self.epsilon = epsilon

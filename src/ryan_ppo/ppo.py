@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.optim as optim
 from torch.distributions import Normal
@@ -21,6 +23,11 @@ KL_EPOCH_STOP_FACTOR = 1.5
 LR_ADJUST_RATIO = 1.5
 MIN_LR = 1e-5
 MAX_LR = 1e-2
+
+
+def strip_compile_prefix(state_dict: dict) -> dict:
+    # allows loading of compiled models into non-compiled models
+    return {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
 
 
 class PPOAgent:
@@ -57,6 +64,10 @@ class PPOAgent:
             self.actor_params + self.critic_params, lr=cfg.learning_rate
         )
 
+        # allows saving of non-compiled weights.
+        self.actor_module = self.actor
+        self.critic_module = self.critic
+
         self.actor = torch.compile(self.actor)
         self.critic = torch.compile(self.critic)
 
@@ -83,8 +94,8 @@ class PPOAgent:
         torch.save(
             {
                 "iteration": iteration,
-                "actor": self.actor.state_dict(),
-                "critic": self.critic.state_dict(),
+                "actor": self.actor_module.state_dict(),
+                "critic": self.critic_module.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
                 "current_lr": self.current_lr,
                 "update_count": self.update_count,
@@ -96,12 +107,12 @@ class PPOAgent:
         # fully loads the checkpoint saved by the save_checkpoint() function.
 
         checkpoint = torch.load(path, map_location=self.device)
-        self.actor.load_state_dict(checkpoint["actor"])
+        self.actor_module.load_state_dict(strip_compile_prefix(checkpoint["actor"]))
         self.actor.log_std.data.clamp_(max=LOG_STD_MAX)
         torch.maximum(
             self.actor.log_std.data, self.log_std_min, out=self.actor.log_std.data
         )
-        self.critic.load_state_dict(checkpoint["critic"])
+        self.critic_module.load_state_dict(strip_compile_prefix(checkpoint["critic"]))
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.current_lr = checkpoint["current_lr"]
         self.update_count = checkpoint.get("update_count", 0)
@@ -118,7 +129,7 @@ class PPOAgent:
             state_obs = state_obs.to(self.device)
 
         with torch.no_grad():
-            mu, std = self.actor(state_obs)
+            mu, std, _ = self.actor(state_obs)
 
         dist = Normal(mu, std)
         action = dist.sample()
@@ -168,7 +179,6 @@ class PPOAgent:
         mus_old: torch.Tensor,
         stds_old: torch.Tensor,
         epochs: int = 4,
-        batch_size: int = 64,
         num_mini_batches: int = 4,
     ) -> float:
         # updates Actor and Critic networks using the PPO algorithm
@@ -184,6 +194,7 @@ class PPOAgent:
         b_stds_old = stds_old.reshape(-1, stds_old.shape[-1])
 
         dataset_size = b_states.shape[0]
+        batch_size = dataset_size // num_mini_batches
 
         mean_kl = 0
         num_updates = 0
@@ -195,6 +206,7 @@ class PPOAgent:
             indices = torch.randperm(dataset_size, device=self.device)
 
             epoch_kl = 0
+            epoch_updates = 0
 
             # mini-batch updates
             for start in range(0, dataset_size, batch_size):
@@ -215,8 +227,7 @@ class PPOAgent:
                 )
 
                 # calculate log_probs for current policy
-                mu, std = self.actor(batch_states)
-                pre_tanh = self.actor.pre_tanh
+                mu, std, pre_tanh = self.actor(batch_states)
 
                 dist = Normal(mu, std)
                 log_probs = dist.log_prob(batch_actions).sum(dim=-1)
@@ -235,7 +246,12 @@ class PPOAgent:
                         dim=-1,
                     )
                     batch_kl = kl.mean().item()
+                    if math.isnan(batch_kl):
+                        raise RuntimeError(
+                            f"KL is NaN at update {self.update_count}, epoch {epoch}"
+                        )
                     epoch_kl += batch_kl
+                    epoch_updates += 1
                     num_updates += 1
 
                     # kl early stopping per minibatch
@@ -304,7 +320,7 @@ class PPOAgent:
                 )
             mean_kl += epoch_kl
 
-            mean_epoch_kl = epoch_kl / num_mini_batches
+            mean_epoch_kl = epoch_kl / epoch_updates
             if kl_abort or mean_epoch_kl > self.desired_kl * KL_EPOCH_STOP_FACTOR:
                 break
 

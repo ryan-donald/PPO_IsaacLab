@@ -1,11 +1,15 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 
 [project]
 name = "ryan-ppo"
 version = "1.0.0"
+description = "PPO implementation for NVIDIA Isaac Lab, with sim2real transfer to the SO-ARM101 robot"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   { name="Ryan Donald" }
 ]
@@ -13,10 +17,15 @@ requires-python = ">=3.12"
 dependencies = [
   "torch >= 2.7.0",
   "numpy >= 1.26.4",
-  "pytest",
   "rich",
   "wandb",
   "gymnasium",
+]
+
+[dependency-groups]
+dev = [
+  "pytest",
+  "ruff",
 ]
 
 [tool.setuptools.packages.find]

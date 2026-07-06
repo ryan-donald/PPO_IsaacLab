@@ -1,5 +1,6 @@
 import configparser
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -26,8 +27,10 @@ class TrainConfig:
 
     @classmethod
     def from_ini(cls, path):
+        # allows reading a default config then a override, or a full config.
+        path = Path(path)
         config = configparser.ConfigParser()
-        config.read(path)
+        config.read([path.parent / "defaults.ini", path])
         train = config["train"]
         return cls(
             learning_rate=train.getfloat("learning_rate"),

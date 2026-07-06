@@ -39,7 +39,7 @@ def test_agent_init():
     random_input = torch.randn(batch_size, state_dim)
 
     critic_output = agent.critic.forward(random_input)
-    mu, std = agent.actor.forward(random_input)
+    mu, std, _ = agent.actor.forward(random_input)
 
     assert critic_output.shape == (batch_size, 1), (
         "Critic output should be (batch_size, 1)"
@@ -146,14 +146,14 @@ def test_update():
     agent = make_agent(state_dim, action_dim, hidden_dims)
 
     random_states = torch.randn(batch_size, state_dim)
-    random_actions = torch.randn(batch_size, action_dim)
-    # log_probs, returns, advantages, values_old should be 1D depending on your batching
-    random_log_probs_old = torch.randn(batch_size)
+    # sample the "old" rollout data from the agent's own policy, as in real
+    # usage, prevents random KL cancelling and NaNs
+    actions, log_probs_old, _, mus_old, stds_old = agent.select_action(random_states)
+    stds_old = stds_old.expand_as(mus_old)
+    # returns, advantages, values_old should be 1D depending on your batching
     random_returns = torch.randn(batch_size)
     random_advantages = torch.randn(batch_size)
     random_values_old = torch.randn(batch_size)
-    random_mus_old = torch.randn(batch_size, action_dim)
-    random_stds_old = torch.randn(batch_size, action_dim)
     epochs = 4
 
     actor_old_params = [p.clone() for p in agent.actor.parameters()]
@@ -161,15 +161,15 @@ def test_update():
 
     kl = agent.update(
         random_states,
-        random_actions,
-        random_log_probs_old,
+        actions,
+        log_probs_old,
         random_returns,
         random_advantages,
         random_values_old,
-        random_mus_old,
-        random_stds_old,
+        mus_old,
+        stds_old,
         epochs,
-        batch_size,
+        num_mini_batches=1,
     )
 
     assert type(kl) is float
@@ -185,3 +185,22 @@ def test_update():
         not torch.allclose(old, new)
         for old, new in zip(critic_old_params, critic_new_params)
     ), "critic weights did not update"
+
+
+def test_checkpoint_roundtrip(tmp_path):
+    # a saved checkpoint restores into a fresh agent with identical weights.
+    agent = make_agent(4, 4, [2, 2])
+    path = str(tmp_path / "checkpoint.pth")
+    agent.save_checkpoint(path, iteration=7)
+
+    checkpoint = torch.load(path)
+    assert not any(k.startswith("_orig_mod.") for k in checkpoint["actor"])
+    assert not any(k.startswith("_orig_mod.") for k in checkpoint["critic"])
+
+    other = make_agent(4, 4, [2, 2])
+    assert other.load_checkpoint(path) == 7
+
+    for key, value in agent.actor_module.state_dict().items():
+        assert torch.equal(value, other.actor_module.state_dict()[key])
+    for key, value in agent.critic_module.state_dict().items():
+        assert torch.equal(value, other.critic_module.state_dict()[key])

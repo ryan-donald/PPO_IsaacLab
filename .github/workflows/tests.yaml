@@ -17,8 +17,14 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          # CPU-only torch: the default CUDA wheels are ~2.5 GB and dominate CI time
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e . --group dev
 
+      - name: Lint
+        run: |
+          ruff check src tests
+          ruff format --check src tests
 
       - name: Run tests
         run: pytest

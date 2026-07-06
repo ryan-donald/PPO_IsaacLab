@@ -21,6 +21,7 @@ def train(args_cli):
     import random
     import signal
     import time
+    from contextlib import contextmanager
     from datetime import datetime
 
     import gymnasium as gym
@@ -41,6 +42,20 @@ def train(args_cli):
     # set device before using it in class instantiation
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+
+    # allow TF32 tensor cores for float32 matmuls.
+    torch.set_float32_matmul_precision("high")
+
+    @contextmanager
+    def profile_zone(zone_id, name):
+        # wraps a block in a carb.profiler zone; no-op when profiling is off.
+        if args_cli.profile:
+            carb.profiler.begin(zone_id, name)
+        try:
+            yield
+        finally:
+            if args_cli.profile:
+                carb.profiler.end(zone_id)
 
     # set seeds for reproducibility
     seed = args_cli.seed
@@ -91,13 +106,17 @@ def train(args_cli):
     num_envs = env.unwrapped.num_envs
 
     steps_per_rollout = cfg.num_steps_per_env * num_envs  # 24 * num_envs
-    batch_size = steps_per_rollout // cfg.num_mini_batches
     num_steps = cfg.num_steps_per_env
     curr_max = -float("inf")
 
     # logging and checkpointing
     log_path = f"ppo_logs/{args_cli.task}/{run_id}/"
     os.makedirs(log_path, exist_ok=True)
+
+    # iterations at which to save full resumable checkpoint bundles
+    checkpoint_iters = {
+        int(it) for it in args_cli.checkpoint_iters.split(",") if it.strip()
+    }
 
     # resume from a checkpoint. fully resumes the training, with actor, critic,
     # optimizer, lr, and step count for correct curriculum firing.
@@ -128,7 +147,7 @@ def train(args_cli):
     train_stats = {
         "lr": 0.0,
         "kl": 0.0,
-        "Epochs": 0.0,
+        "Iteration": 0,
     }
 
     run_url = run.url
@@ -168,24 +187,14 @@ def train(args_cli):
             if cfg.use_normalization:
                 agent.actor.update_normalization(state_obs)
 
-            if args_cli.profile:
-                carb.profiler.begin(2, "select_action")
-
             # select action from policy
-            with torch.no_grad():
+            with profile_zone(2, "select_action"), torch.no_grad():
                 action, log_prob, entropy, mu, std = agent.select_action(state_obs)
                 value = agent.critic(state_obs).squeeze(-1)
 
-            if args_cli.profile:
-                carb.profiler.end(2)
-
-            if args_cli.profile:
-                carb.profiler.begin(3, "env_step")
             # take step in environment
-            next_state, reward, terminated, truncated, info = env.step(action)
-
-            if args_cli.profile:
-                carb.profiler.end(3)
+            with profile_zone(3, "env_step"):
+                next_state, reward, terminated, truncated, info = env.step(action)
 
             # store steps where envs finished, either terminated or truncated
             done = torch.logical_or(terminated, truncated)
@@ -225,124 +234,106 @@ def train(args_cli):
         with torch.no_grad():
             next_value = agent.critic(policy_obs(state)).squeeze(-1)
 
-        if args_cli.profile:
-            carb.profiler.begin(4, "compute_gae")
-
         # compute GAE advantages and returns
-        advantages, returns = agent.compute_gae(
-            storage.rewards, storage.values, storage.dones, next_value
-        )
-
-        if args_cli.profile:
-            carb.profiler.end(4)
-
-        if args_cli.profile:
-            carb.profiler.begin(5, "update")
+        with profile_zone(4, "compute_gae"):
+            advantages, returns = agent.compute_gae(
+                storage.rewards, storage.values, storage.dones, next_value
+            )
 
         # update actor and critic networks
         update_start = time.perf_counter()
-        mean_kl = agent.update(
-            storage.states,
-            storage.actions,
-            storage.log_probs,
-            returns,
-            advantages,
-            storage.values,
-            storage.mus,
-            storage.stds,
-            epochs=cfg.num_learning_epochs,
-            batch_size=batch_size,
-            num_mini_batches=cfg.num_mini_batches,
-        )
+        with profile_zone(5, "update"):
+            mean_kl = agent.update(
+                storage.states,
+                storage.actions,
+                storage.log_probs,
+                returns,
+                advantages,
+                storage.values,
+                storage.mus,
+                storage.stds,
+                epochs=cfg.num_learning_epochs,
+                num_mini_batches=cfg.num_mini_batches,
+            )
         update_time = time.perf_counter() - update_start
 
-        if args_cli.profile:
-            carb.profiler.end(5)
+        with profile_zone(6, "logging/cli"):
+            # reduce rollout into episode statistics (reward stats forward-filled
+            # if no episodes completed this rollout; num_episodes is zero then).
+            stats = tracker.summarize(storage.entropies)
 
-        if args_cli.profile:
-            carb.profiler.begin(6, "logging/cli")
+            logging_dict = {
+                "train/avg_reward": stats.avg_reward,
+                "train/min_reward": stats.min_reward,
+                "train/max_reward": stats.max_reward,
+                "train/std_reward": stats.std_reward,
+                "train/kl": mean_kl,
+                "train/lr": agent.current_lr,
+                "train/episodes": stats.num_episodes,
+                "train/avg_entropy": stats.avg_entropy,
+            }
 
-        # reduce rollout into episode statistics (reward stats forward-filled if no
-        # episodes completed this rollout; num_episodes is zero in that case).
-        stats = tracker.summarize(storage.entropies)
+            for t_name in term_names:
+                logging_dict[f"rewards/{t_name}"] = stats.term_rewards[t_name]
 
-        logging_dict = {
-            "train/avg_reward": stats.avg_reward,
-            "train/min_reward": stats.min_reward,
-            "train/max_reward": stats.max_reward,
-            "train/std_reward": stats.std_reward,
-            "train/kl": mean_kl,
-            "train/lr": agent.current_lr,
-            "train/episodes": stats.num_episodes,
-            "train/avg_entropy": stats.avg_entropy,
-        }
+            wandb.log(logging_dict, step=update)
 
-        for t_name in term_names:
-            logging_dict[f"rewards/{t_name}"] = stats.term_rewards[t_name]
+            # aggregate rows for the TUI (added after wandb.log so they aren't
+            # logged).
+            stats.term_rewards["Mean Reward"] = stats.avg_reward
+            stats.term_rewards["Max Reward"] = stats.max_reward
 
-        wandb.log(logging_dict, step=update)
-
-        # aggregate rows for the TUI (added after wandb.log so they aren't logged).
-        stats.term_rewards["Mean Reward"] = stats.avg_reward
-        stats.term_rewards["Max Reward"] = stats.max_reward
-
-        perf_stats["steps"] += steps_per_rollout
-        perf_stats["Runtime"] = time.perf_counter() - start_time
-        perf_stats["steps/s"] = perf_stats["steps"] / perf_stats["Runtime"]
-        perf_stats["Rollout Time"] = rollout_time
-        perf_stats["Update Time"] = update_time
-        perf_stats["episodes"] += stats.num_episodes
-        perf_stats["Remaining Time"] = (
-            (cfg.max_iterations - (update + 1))
-            * steps_per_rollout
-            / perf_stats["steps/s"]
-        )
-
-        train_stats["lr"] = agent.current_lr
-        train_stats["kl"] = mean_kl
-        train_stats["Epochs"] = update + 1
-
-        live.update(
-            generate_table(
-                perf_stats, train_stats, stats.term_rewards, args_cli.task, run_url
+            perf_stats["steps"] += steps_per_rollout
+            perf_stats["Runtime"] = time.perf_counter() - start_time
+            perf_stats["steps/s"] = perf_stats["steps"] / perf_stats["Runtime"]
+            perf_stats["Rollout Time"] = rollout_time
+            perf_stats["Update Time"] = update_time
+            perf_stats["episodes"] += stats.num_episodes
+            perf_stats["Remaining Time"] = (
+                (cfg.max_iterations - (update + 1))
+                * steps_per_rollout
+                / perf_stats["steps/s"]
             )
-        )
 
-        if args_cli.profile:
-            carb.profiler.end(6)
+            train_stats["lr"] = agent.current_lr
+            train_stats["kl"] = mean_kl
+            train_stats["Iteration"] = update + 1
+
+            live.update(
+                generate_table(
+                    perf_stats, train_stats, stats.term_rewards, args_cli.task, run_url
+                )
+            )
 
         # save best model when reward improves
         if args_cli.save:
+            iteration = update + 1
+
             if stats.avg_reward > curr_max:
                 curr_max = stats.avg_reward
-                torch.save(agent.actor.state_dict(), log_path + "actor_best.pth")
-                torch.save(agent.critic.state_dict(), log_path + "critic_best.pth")
-
-            # save checkpoint every 100 iterations
-            if (update + 1) % 100 == 0:
+                torch.save(agent.actor_module.state_dict(), log_path + "actor_best.pth")
                 torch.save(
-                    agent.actor.state_dict(), log_path + f"actor_iter_{update + 1}.pth"
-                )
-                torch.save(
-                    agent.critic.state_dict(),
-                    log_path + f"critic_iter_{update + 1}.pth",
+                    agent.critic_module.state_dict(), log_path + "critic_best.pth"
                 )
 
-            # full checkpoint save during training for resuming to finetune later
-            if (update + 1) == args_cli.checkpoint_iter:
-                agent.save_checkpoint(log_path + "checkpoint_pretrain.pth", update + 1)
+            # periodic weight snapshots and a rolling resumable checkpoint
+            if iteration % 100 == 0:
+                torch.save(
+                    agent.actor_module.state_dict(),
+                    log_path + f"actor_iter_{iteration}.pth",
+                )
+                torch.save(
+                    agent.critic_module.state_dict(),
+                    log_path + f"critic_iter_{iteration}.pth",
+                )
+                agent.save_checkpoint(log_path + "checkpoint_latest.pth", iteration)
 
-            if (update + 1) % 100 == 0:
-                agent.save_checkpoint(log_path + "checkpoint_latest.pth", update + 1)
-
-            if (update + 1) == 5000:
-                agent.save_checkpoint(log_path + "checkpoint_5000.pth", update + 1)
-
-            if (update + 1) == 7500:
-                agent.save_checkpoint(log_path + "checkpoint_7500.pth", update + 1)
-
-            if (update + 1) == 10000:
-                agent.save_checkpoint(log_path + "checkpoint_10000.pth", update + 1)
+            # full checkpoint bundles at requested iterations, for resuming or
+            # fine-tuning later
+            if iteration in checkpoint_iters:
+                agent.save_checkpoint(
+                    log_path + f"checkpoint_{iteration}.pth", iteration
+                )
 
     live.stop()
     env.close()
@@ -350,8 +341,8 @@ def train(args_cli):
 
     # save final model
     if args_cli.save:
-        torch.save(agent.actor.state_dict(), log_path + "actor_final.pth")
-        torch.save(agent.critic.state_dict(), log_path + "critic_final.pth")
+        torch.save(agent.actor_module.state_dict(), log_path + "actor_final.pth")
+        torch.save(agent.critic_module.state_dict(), log_path + "critic_final.pth")
         agent.save_checkpoint(log_path + "checkpoint_final.pth", cfg.max_iterations)
 
     if args_cli.profile:
@@ -389,11 +380,12 @@ if __name__ == "__main__":
         "(restores weights, optimizer, LR, and iteration).",
     )
     parser.add_argument(
-        "--checkpoint_iter",
-        type=int,
-        default=5000,
-        help="Iteration at which to save the single resumable checkpoint_pretrain.pth "
-        "bundle (default 5000, the curriculum-fire point). Requires --save.",
+        "--checkpoint_iters",
+        type=str,
+        default="5000,7500,10000",
+        help="Comma-separated iterations at which to save full resumable "
+        "checkpoint_<iter>.pth bundles (restore weights, optimizer, LR, and "
+        "iteration). Requires --save.",
     )
     parser.add_argument(
         "--profile",

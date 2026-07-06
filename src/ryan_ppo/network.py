@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -23,16 +25,13 @@ class Actor(nn.Module):
         self,
         state_dim: int,
         action_dim: int,
-        hidden_dims: list[int] = [64, 64],
-        normalization_object: ObsNormalization = None,
+        hidden_dims: Sequence[int] = (64, 64),
+        normalization_object: ObsNormalization | None = None,
         std: float = 0.5,
     ) -> None:
-        super(Actor, self).__init__()
+        super().__init__()
 
-        if normalization_object:
-            self.obs_normalizer = normalization_object
-        else:
-            self.obs_normalizer = None
+        self.obs_normalizer = normalization_object
 
         layers = []
         prev_dim = state_dim
@@ -56,18 +55,21 @@ class Actor(nn.Module):
                 nn.init.orthogonal_(module.weight, gain=0.01)
                 nn.init.constant_(module.bias, 0.0)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # normalize observations, then forward pass
         if self.obs_normalizer:
             x = self.obs_normalizer(x)
 
         for layer in self.hidden_layers:
             x = F.elu(layer(x))
-        # stores pre-tanh values, used to calculate the saturation loss in update
-        self.pre_tanh = self.output_layer(x)
-        mu = torch.tanh(self.pre_tanh)
+        # pre-tanh values are returned, used to calculate the saturation loss in
+        # update.
+        pre_tanh = self.output_layer(x)
+        mu = torch.tanh(pre_tanh)
         std = torch.exp(self.log_std)
-        return mu, std
+        return mu, std, pre_tanh
 
     def update_normalization(self, obs: torch.Tensor) -> None:
         # update observation normalization statistics
@@ -79,15 +81,12 @@ class Critic(nn.Module):
     def __init__(
         self,
         state_dim: int,
-        hidden_dims: list[int] = [64, 64],
-        normalization_object: ObsNormalization = None,
+        hidden_dims: Sequence[int] = (64, 64),
+        normalization_object: ObsNormalization | None = None,
     ) -> None:
-        super(Critic, self).__init__()
+        super().__init__()
 
-        if normalization_object:
-            self.obs_normalizer = normalization_object
-        else:
-            self.obs_normalizer = None
+        self.obs_normalizer = normalization_object
 
         layers = []
         prev_dim = state_dim

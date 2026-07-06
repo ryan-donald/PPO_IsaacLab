@@ -1,4 +1,4 @@
-[![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=fff)](https://docs.python.org/3/whatsnew/3.11.html)
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=fff)](https://docs.python.org/3/whatsnew/3.12.html)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.7-ee4c2c?logo=pytorch&logoColor=white)](https://github.com/pytorch/pytorch/releases/tag/v2.7.0)
 ![Tests](https://github.com/ryan-donald/ppo/actions/workflows/tests.yaml/badge.svg)
 
@@ -11,6 +11,7 @@ This is a repository containing my implementation of the Proximal Policy Optimiz
 To use this package, follow the steps below:
 
 * Install and setup Nvidia's IsaacLab, found [here](https://github.com/isaac-sim/IsaacLab).
+* Install my custom IsaacLab tasks from [tasks-isaaclab](https://github.com/ryan-donald/tasks-isaaclab), which provides the `ryan_tasks` package the training scripts import: clone it and run "pip install -e source/ryan_tasks" in its base directory.
 * Clone this repository.
 * Run the command "pip install -e ." within this repository.
 * You are all set and can now train agents within IsaacLab using this package. An example training run command is below:
@@ -55,4 +56,4 @@ The main structure of this repository is as follows:
 
 * train.py - Contains the training loop, any initialization code, and calls functions to implement the entire PPO algorithm.  
   
-* env_cfgs.py - Contains various hyper-parameters for PPO depending on the environment within IsaacLab that is being utilized.
+* config.py - Parses per-task hyper-parameter files from the 'cfg/' directory. Shared values live in 'cfg/defaults.ini'; each task's .ini file only sets the values that differ from those defaults.
