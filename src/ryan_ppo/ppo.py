@@ -22,7 +22,7 @@ KL_LR_INCREASE_FACTOR = 2.0
 KL_EPOCH_STOP_FACTOR = 1.5
 LR_ADJUST_RATIO = 1.5
 MIN_LR = 1e-5
-MAX_LR = 1e-2
+MAX_LR = 1e-3
 
 
 def strip_compile_prefix(state_dict: dict) -> dict:

@@ -1,5 +1,6 @@
 import argparse
 
+import typing_extensions  # noqa: F401 # for profiling so torch doesnt break
 from isaaclab.app import AppLauncher
 
 
@@ -44,7 +45,7 @@ def train(args_cli):
     print(f"Using device: {device}")
 
     # allow TF32 tensor cores for float32 matmuls.
-    torch.set_float32_matmul_precision("high")
+    # torch.set_float32_matmul_precision("high")
 
     @contextmanager
     def profile_zone(zone_id, name):
