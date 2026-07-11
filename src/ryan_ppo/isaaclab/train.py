@@ -148,6 +148,8 @@ def train(args_cli):
     train_stats = {
         "lr": 0.0,
         "kl": 0.0,
+        "entropy": 0.0,
+        "Epochs": f"0/{cfg.num_learning_epochs}",
         "Iteration": 0,
     }
 
@@ -244,7 +246,7 @@ def train(args_cli):
         # update actor and critic networks
         update_start = time.perf_counter()
         with profile_zone(5, "update"):
-            mean_kl = agent.update(
+            mean_kl, update_epochs = agent.update(
                 storage.states,
                 storage.actions,
                 storage.log_probs,
@@ -272,6 +274,7 @@ def train(args_cli):
                 "train/lr": agent.current_lr,
                 "train/episodes": stats.num_episodes,
                 "train/avg_entropy": stats.avg_entropy,
+                "train/update_epochs": update_epochs,
             }
 
             for t_name in term_names:
@@ -298,6 +301,8 @@ def train(args_cli):
 
             train_stats["lr"] = agent.current_lr
             train_stats["kl"] = mean_kl
+            train_stats["entropy"] = stats.avg_entropy
+            train_stats["Epochs"] = f"{update_epochs:g}/{cfg.num_learning_epochs}"
             train_stats["Iteration"] = update + 1
 
             live.update(

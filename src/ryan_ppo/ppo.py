@@ -180,7 +180,7 @@ class PPOAgent:
         stds_old: torch.Tensor,
         epochs: int = 4,
         num_mini_batches: int = 4,
-    ) -> float:
+    ) -> tuple[float, float]:
         # updates Actor and Critic networks using the PPO algorithm
 
         # batch data
@@ -329,4 +329,9 @@ class PPOAgent:
         mean_kl = mean_kl / num_updates if num_updates > 0 else 0
         self.update_count += 1
 
-        return mean_kl
+        # tracking how many actual epochs ran this update. i.e., how many before kl
+        # stopping.
+        updates_per_epoch = math.ceil(dataset_size / batch_size)
+        epochs_run = num_updates / updates_per_epoch
+
+        return mean_kl, epochs_run

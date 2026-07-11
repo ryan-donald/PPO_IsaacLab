@@ -159,7 +159,7 @@ def test_update():
     actor_old_params = [p.clone() for p in agent.actor.parameters()]
     critic_old_params = [p.clone() for p in agent.critic.parameters()]
 
-    kl = agent.update(
+    kl, epochs_run = agent.update(
         random_states,
         actions,
         log_probs_old,
@@ -173,6 +173,7 @@ def test_update():
     )
 
     assert type(kl) is float
+    assert 0.0 < epochs_run <= epochs
 
     actor_new_params = [p.clone() for p in agent.actor.parameters()]
     critic_new_params = [p.clone() for p in agent.critic.parameters()]
