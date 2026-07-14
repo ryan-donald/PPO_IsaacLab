@@ -100,7 +100,7 @@ class EpisodeTracker:
         self.current_rewards *= not_done
         self.current_terms *= not_done.unsqueeze(-1)
 
-    def summarize(self, entropies: torch.Tensor) -> RolloutStats:
+    def summarize(self, avg_entropy: float) -> RolloutStats:
         """reduce the episodes that finished this rollout into stats, then reset the
         accumulators"""
         n = int(self.ep_count.item())
@@ -123,7 +123,7 @@ class EpisodeTracker:
         self.last.min_reward = self.ep_min.item()
         self.last.max_reward = self.ep_max.item()
         self.last.std_reward = std
-        self.last.avg_entropy = entropies.mean().item()
+        self.last.avg_entropy = avg_entropy
         self.last.num_episodes = n
         for i, name in enumerate(self.term_names):
             self.last.term_rewards[name] = (self.term_sums[i] / self.ep_count).item()

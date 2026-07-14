@@ -25,16 +25,12 @@ class ObsNormalization(nn.Module):
         delta_mean = batch_mean - self.mean
         total_count = self.count + batch_count
 
-        self.mean = self.mean + delta_mean * batch_count / total_count
+        self.mean += delta_mean * batch_count / total_count
 
-        self.var = (
-            (self.var * self.count)
-            + (batch_var * batch_count)
-            + torch.square(delta_mean) * (self.count * batch_count / total_count)
-        )
-
-        self.var = self.var / total_count
-        self.count = total_count
+        self.var.mul_(self.count).add_(batch_var * batch_count).add_(
+            torch.square(delta_mean) * (self.count * batch_count / total_count)
+        ).div_(total_count)
+        self.count.copy_(total_count)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         std = torch.sqrt(self.var + self.epsilon)

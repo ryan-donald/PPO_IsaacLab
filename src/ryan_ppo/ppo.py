@@ -4,7 +4,6 @@ import math
 
 import torch
 import torch.optim as optim
-from torch.distributions import Normal
 
 from ryan_ppo.config import TrainConfig
 from ryan_ppo.network import (
@@ -23,6 +22,8 @@ KL_EPOCH_STOP_FACTOR = 1.5
 LR_ADJUST_RATIO = 1.5
 MIN_LR = 1e-5
 MAX_LR = 1e-3
+
+LOG_SQRT_2PI = 0.5 * math.log(2 * math.pi)
 
 
 def strip_compile_prefix(state_dict: dict) -> dict:
@@ -61,7 +62,9 @@ class PPOAgent:
         self.critic_params = list(self.critic.parameters())
 
         self.optimizer = optim.Adam(
-            self.actor_params + self.critic_params, lr=cfg.learning_rate
+            self.actor_params + self.critic_params,
+            lr=cfg.learning_rate,
+            fused=(device.type == "cuda"),
         )
 
         # allows saving of non-compiled weights.
@@ -120,22 +123,35 @@ class PPOAgent:
 
     def select_action(
         self, state_obs: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # selects action based upon an observation and the current policy,
-        # returns action, log_prob, entropy, mu, std.
+        # returns action, log_prob, mu, std.
         if not torch.is_tensor(state_obs):
             state_obs = torch.tensor(state_obs, dtype=torch.float, device=self.device)
         else:
             state_obs = state_obs.to(self.device)
 
         with torch.no_grad():
-            mu, std, _ = self.actor(state_obs)
+            return self.act(state_obs)
 
-        dist = Normal(mu, std)
-        action = dist.sample()
-        entropy = dist.entropy().sum(dim=-1)
-        log_prob = dist.log_prob(action).sum(dim=-1)
-        return action, log_prob, entropy, mu, std
+    @torch.compile
+    def act(
+        self, state_obs: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # performs forward pass, gaussian sample, and log_prob in one compiled function
+        mu, std, _ = self.actor_module(state_obs)
+        action = torch.addcmul(mu, std, torch.randn_like(mu))
+        log_prob = (
+            -0.5 * ((action - mu) / std).square()
+            - self.actor_module.log_std
+            - LOG_SQRT_2PI
+        ).sum(dim=-1)
+        return action, log_prob, mu, std
+
+    def entropy(self) -> float:
+        # closed-form Gaussian entropy, summed over action dims.
+        with torch.no_grad():
+            return (self.actor.log_std + 0.5 + LOG_SQRT_2PI).sum().item()
 
     @torch.compile
     def compute_gae(
@@ -167,7 +183,69 @@ class PPOAgent:
 
         return advantages, returns
 
-    # @torch.compile
+    @torch.compile
+    def minibatch_loss(
+        self,
+        batch_states: torch.Tensor,
+        batch_actions: torch.Tensor,
+        batch_log_probs_old: torch.Tensor,
+        batch_returns: torch.Tensor,
+        batch_advantages: torch.Tensor,
+        batch_values_old: torch.Tensor,
+        batch_mus_old: torch.Tensor,
+        std_old: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        # single minibatch loss and kl in a single compiled function.
+
+        # calculate log_probs for current policy.
+        mu, std, pre_tanh = self.actor_module(batch_states)
+
+        log_probs = (
+            -0.5 * ((batch_actions - mu) / std).square()
+            - self.actor_module.log_std
+            - LOG_SQRT_2PI
+        ).sum(dim=-1)
+        entropy = (self.actor_module.log_std + 0.5 + LOG_SQRT_2PI).sum()
+
+        # full KL divergence.
+        mu_d = mu.detach()
+        std_d = std.detach()
+        kl = (
+            torch.log(std_d / (std_old + 1e-8))
+            + torch.square(std_old) / (2.0 * torch.square(std_d) + 1e-8)
+            - 0.5
+        ).sum() + (
+            torch.square(batch_mus_old - mu_d) / (2.0 * torch.square(std_d) + 1e-8)
+        ).sum(dim=-1).mean()
+
+        # compute surrogate loss
+        ratios = torch.exp(log_probs - batch_log_probs_old)
+        surr1 = ratios * batch_advantages
+        surr2 = (
+            torch.clamp(ratios, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon)
+            * batch_advantages
+        )
+        actor_loss = -torch.min(surr1, surr2).mean()
+
+        # compute clipped value loss
+        values = self.critic_module(batch_states).view(-1)
+        value_pred_clipped = batch_values_old + torch.clamp(
+            values - batch_values_old, -self.clip_epsilon, self.clip_epsilon
+        )
+        value_losses = (values - batch_returns).pow(2)
+        value_losses_clipped = (value_pred_clipped - batch_returns).pow(2)
+        critic_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
+
+        # total loss
+        loss = (
+            actor_loss
+            + self.value_coef * critic_loss
+            - self.entropy_coef * entropy
+            + self.saturation_coef * pre_tanh.pow(2).mean()
+        )
+
+        return loss, kl
+
     def update(
         self,
         states: torch.Tensor,
@@ -177,11 +255,11 @@ class PPOAgent:
         advantages: torch.Tensor,
         values_old: torch.Tensor,
         mus_old: torch.Tensor,
-        stds_old: torch.Tensor,
+        std_old: torch.Tensor,
         epochs: int = 4,
         num_mini_batches: int = 4,
     ) -> tuple[float, float]:
-        # updates Actor and Critic networks using the PPO algorithm
+        # updates Actor and Critic networks using the PPO algorithm.
 
         # batch data
         b_states = states.reshape(-1, states.shape[-1])
@@ -191,7 +269,11 @@ class PPOAgent:
         b_advantages = advantages.reshape(-1)
         b_values_old = values_old.reshape(-1)
         b_mus_old = mus_old.reshape(-1, mus_old.shape[-1])
-        b_stds_old = stds_old.reshape(-1, stds_old.shape[-1])
+
+        # normalize advantages once over the full batch
+        b_advantages = (b_advantages - b_advantages.mean()) / (
+            b_advantages.std() + 1e-8
+        )
 
         dataset_size = b_states.shape[0]
         batch_size = dataset_size // num_mini_batches
@@ -213,93 +295,40 @@ class PPOAgent:
                 end = start + batch_size
                 batch_indices = indices[start:end]
 
-                batch_states = b_states[batch_indices]
-                batch_actions = b_actions[batch_indices]
-                batch_log_probs_old = b_log_probs_old[batch_indices]
-                batch_returns = b_returns[batch_indices]
-                batch_advantages = b_advantages[batch_indices]
-                batch_values_old = b_values_old[batch_indices]
-                batch_mus_old = b_mus_old[batch_indices]
-                batch_stds_old = b_stds_old[batch_indices]
-
-                batch_advantages = (batch_advantages - batch_advantages.mean()) / (
-                    batch_advantages.std() + 1e-8
+                loss, kl = self.minibatch_loss(
+                    b_states[batch_indices],
+                    b_actions[batch_indices],
+                    b_log_probs_old[batch_indices],
+                    b_returns[batch_indices],
+                    b_advantages[batch_indices],
+                    b_values_old[batch_indices],
+                    b_mus_old[batch_indices],
+                    std_old,
                 )
 
-                # calculate log_probs for current policy
-                mu, std, pre_tanh = self.actor(batch_states)
-
-                dist = Normal(mu, std)
-                log_probs = dist.log_prob(batch_actions).sum(dim=-1)
-                entropy = dist.entropy().sum(dim=-1).mean()
-
-                # full KL divergence
-                with torch.no_grad():
-                    kl = torch.sum(
-                        torch.log(std / (batch_stds_old + 1e-8))
-                        + (
-                            torch.square(batch_stds_old)
-                            + torch.square(batch_mus_old - mu)
-                        )
-                        / (2.0 * torch.square(std) + 1e-8)
-                        - 0.5,
-                        dim=-1,
+                batch_kl = kl.item()
+                if math.isnan(batch_kl):
+                    raise RuntimeError(
+                        f"KL is NaN at update {self.update_count}, epoch {epoch}"
                     )
-                    batch_kl = kl.mean().item()
-                    if math.isnan(batch_kl):
-                        raise RuntimeError(
-                            f"KL is NaN at update {self.update_count}, epoch {epoch}"
-                        )
-                    epoch_kl += batch_kl
-                    epoch_updates += 1
-                    num_updates += 1
+                epoch_kl += batch_kl
+                epoch_updates += 1
+                num_updates += 1
 
-                    # kl early stopping per minibatch
-                    if batch_kl > self.desired_kl * KL_ABORT_FACTOR:
-                        kl_abort = True
+                # kl early stopping per minibatch
+                if batch_kl > self.desired_kl * KL_ABORT_FACTOR:
+                    kl_abort = True
 
-                    if self.schedule_type == "adaptive":
-                        if batch_kl > self.desired_kl * KL_LR_DECREASE_FACTOR:
-                            self.current_lr = max(
-                                MIN_LR, self.current_lr / LR_ADJUST_RATIO
-                            )
-                        elif 0.0 < batch_kl < self.desired_kl / KL_LR_INCREASE_FACTOR:
-                            self.current_lr = min(
-                                MAX_LR, self.current_lr * LR_ADJUST_RATIO
-                            )
-                        for param_group in self.optimizer.param_groups:
-                            param_group["lr"] = self.current_lr
+                if self.schedule_type == "adaptive":
+                    if batch_kl > self.desired_kl * KL_LR_DECREASE_FACTOR:
+                        self.current_lr = max(MIN_LR, self.current_lr / LR_ADJUST_RATIO)
+                    elif 0.0 < batch_kl < self.desired_kl / KL_LR_INCREASE_FACTOR:
+                        self.current_lr = min(MAX_LR, self.current_lr * LR_ADJUST_RATIO)
+                    for param_group in self.optimizer.param_groups:
+                        param_group["lr"] = self.current_lr
 
                 if kl_abort:
                     break
-
-                # compute surrogate loss
-                ratios = torch.exp(log_probs - batch_log_probs_old)
-                surr1 = ratios * batch_advantages
-                surr2 = (
-                    torch.clamp(
-                        ratios, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon
-                    )
-                    * batch_advantages
-                )
-                actor_loss = -torch.min(surr1, surr2).mean()
-
-                # compute clipped value loss
-                values = self.critic(batch_states).view(-1)
-                value_pred_clipped = batch_values_old + torch.clamp(
-                    values - batch_values_old, -self.clip_epsilon, self.clip_epsilon
-                )
-                value_losses = (values - batch_returns).pow(2)
-                value_losses_clipped = (value_pred_clipped - batch_returns).pow(2)
-                critic_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
-
-                # total loss
-                loss = (
-                    actor_loss
-                    + self.value_coef * critic_loss
-                    - self.entropy_coef * entropy
-                    + self.saturation_coef * pre_tanh.pow(2).mean()
-                )
 
                 # gradient descent step, with a clipped gradient norm
                 self.optimizer.zero_grad(set_to_none=True)

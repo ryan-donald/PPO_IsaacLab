@@ -17,7 +17,7 @@ def test_completed_episode_stats():
     tracker.record_step(torch.tensor([1.0, 2.0]), torch.tensor([0.0, 0.0]), term_r)
     tracker.record_step(torch.tensor([1.0, 2.0]), torch.tensor([1.0, 0.0]), term_r)
 
-    stats = tracker.summarize(entropies=torch.zeros(2, 2))
+    stats = tracker.summarize(avg_entropy=0.0)
     assert stats.num_episodes == 1
     assert stats.avg_reward == pytest.approx(2.0)
     assert stats.min_reward == pytest.approx(2.0)
@@ -32,12 +32,12 @@ def test_episode_spanning_rollouts():
 
     # rollout 1: the episode does not finish, so its reward keeps accumulating
     tracker.record_step(torch.tensor([1.5]), torch.tensor([0.0]), term_r)
-    stats = tracker.summarize(entropies=torch.zeros(1, 1))
+    stats = tracker.summarize(avg_entropy=0.0)
     assert stats.num_episodes == 0
 
     # rollout 2: the episode finishes; its return spans both rollouts
     tracker.record_step(torch.tensor([2.5]), torch.tensor([1.0]), term_r)
-    stats = tracker.summarize(entropies=torch.zeros(1, 1))
+    stats = tracker.summarize(avg_entropy=0.0)
     assert stats.num_episodes == 1
     assert stats.avg_reward == pytest.approx(4.0)
     assert stats.term_rewards["a"] == pytest.approx(2.0)
@@ -48,12 +48,12 @@ def test_empty_rollout_forward_fills():
     term_r = torch.tensor([[1.0]])
 
     tracker.record_step(torch.tensor([3.0]), torch.tensor([1.0]), term_r)
-    stats = tracker.summarize(entropies=torch.zeros(1, 1))
+    stats = tracker.summarize(avg_entropy=0.0)
     assert stats.num_episodes == 1
     assert stats.avg_reward == pytest.approx(3.0)
 
     # nothing finishes this rollout: reward stats forward-fill from the previous
     # rollout, but the episode count honestly reports zero.
-    stats = tracker.summarize(entropies=torch.zeros(1, 1))
+    stats = tracker.summarize(avg_entropy=0.0)
     assert stats.num_episodes == 0
     assert stats.avg_reward == pytest.approx(3.0)

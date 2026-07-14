@@ -17,6 +17,7 @@ class RolloutStorage:
         num_envs: int,
         state_dim: int,
         action_dim: int,
+        num_terms: int,
         device: torch.device,
     ) -> None:
         self.num_steps = num_steps
@@ -28,10 +29,9 @@ class RolloutStorage:
         self.log_probs = torch.zeros(num_steps, num_envs, device=device)
         self.rewards = torch.zeros(num_steps, num_envs, device=device)
         self.dones = torch.zeros(num_steps, num_envs, device=device)
-        self.values = torch.zeros(num_steps, num_envs, device=device)
-        self.entropies = torch.zeros(num_steps, num_envs, device=device)
+        self.truncs = torch.zeros(num_steps, num_envs, device=device)
+        self.term_rewards = torch.zeros(num_steps, num_envs, num_terms, device=device)
         self.mus = torch.zeros(num_steps, num_envs, action_dim, device=device)
-        self.stds = torch.zeros(num_steps, num_envs, action_dim, device=device)
 
     def add(
         self,
@@ -42,17 +42,15 @@ class RolloutStorage:
         log_prob: torch.Tensor,
         reward: torch.Tensor,
         done: torch.Tensor,
-        value: torch.Tensor,
-        entropy: torch.Tensor,
+        trunc: torch.Tensor,
+        term_reward: torch.Tensor,
         mu: torch.Tensor,
-        std: torch.Tensor,
     ) -> None:
         self.states[step] = state
         self.actions[step] = action
         self.log_probs[step] = log_prob
         self.rewards[step] = reward
         self.dones[step] = done
-        self.values[step] = value
-        self.entropies[step] = entropy
+        self.truncs[step] = trunc
+        self.term_rewards[step] = term_reward
         self.mus[step] = mu
-        self.stds[step] = std

@@ -67,13 +67,12 @@ def test_select_action():
 
     random_input = torch.randn(batch_size, state_dim)
 
-    action, log_prob, entropy, mu, std = agent.select_action(random_input)
+    action, log_prob, mu, std = agent.select_action(random_input)
 
     assert action.shape == (batch_size, action_dim), (
         "Action should be in shape (batch_size, action_dim)"
     )
     assert log_prob.shape == (batch_size,), "Log_prob should be in shape (batch_size,)"
-    assert entropy.shape == (batch_size,), "Entropy should be in shape (batch_size,)"
     assert mu.shape == (batch_size, action_dim), (
         "mu should be in shape (batch_size, action_dim)"
     )
@@ -148,8 +147,7 @@ def test_update():
     random_states = torch.randn(batch_size, state_dim)
     # sample the "old" rollout data from the agent's own policy, as in real
     # usage, prevents random KL cancelling and NaNs
-    actions, log_probs_old, _, mus_old, stds_old = agent.select_action(random_states)
-    stds_old = stds_old.expand_as(mus_old)
+    actions, log_probs_old, mus_old, stds_old = agent.select_action(random_states)
     # returns, advantages, values_old should be 1D depending on your batching
     random_returns = torch.randn(batch_size)
     random_advantages = torch.randn(batch_size)

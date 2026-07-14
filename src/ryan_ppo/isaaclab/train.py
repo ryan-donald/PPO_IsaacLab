@@ -44,9 +44,6 @@ def train(args_cli):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # allow TF32 tensor cores for float32 matmuls.
-    # torch.set_float32_matmul_precision("high")
-
     @contextmanager
     def profile_zone(zone_id, name):
         # wraps a block in a carb.profiler zone; no-op when profiling is off.
@@ -178,7 +175,9 @@ def train(args_cli):
     start_time = time.perf_counter()
 
     # rollout buffers for one PPO iteration.
-    storage = RolloutStorage(num_steps, num_envs, state_dim, action_dim, device)
+    storage = RolloutStorage(
+        num_steps, num_envs, state_dim, action_dim, len(term_names), device
+    )
 
     for update in range(start_iter, cfg.max_iterations):
         rollout_start = time.perf_counter()
@@ -192,8 +191,7 @@ def train(args_cli):
 
             # select action from policy
             with profile_zone(2, "select_action"), torch.no_grad():
-                action, log_prob, entropy, mu, std = agent.select_action(state_obs)
-                value = agent.critic(state_obs).squeeze(-1)
+                action, log_prob, mu, std = agent.select_action(state_obs)
 
             # take step in environment
             with profile_zone(3, "env_step"):
@@ -202,45 +200,42 @@ def train(args_cli):
             # store steps where envs finished, either terminated or truncated
             done = torch.logical_or(terminated, truncated)
 
-            # bootstrap the reward for steps where env terminated, without this the
-            # agent sees a lower reward than if non-terminal, and can avoid a state
-            # more than it should
-            reward = reward + agent.gamma * value * truncated.float()
-
-            # store done values as floats, used in GAE computation later
-            done_f = done.float()
-
-            # store rollout data
+            # store rollout data.
             storage.add(
                 step,
                 state=state_obs,
                 action=action,
                 log_prob=log_prob,
                 reward=reward,
-                done=done_f,
-                value=value,
-                entropy=entropy,
+                done=done.float(),
+                trunc=truncated.float(),
+                term_reward=reward_manager._step_reward.detach(),
                 mu=mu,
-                std=std,
             )
 
             # update state for next step
             state = next_state
 
-            # accumulate episode/term rewards (per-term _step_reward is
-            # (num_envs, num_terms)).
-            tracker.record_step(reward, done_f, reward_manager._step_reward.detach())
-
         rollout_time = time.perf_counter() - rollout_start
 
-        # bootstrap next value for GAE
+        # critic values for the whole rollout in one batched forward pass.
         with torch.no_grad():
+            values = agent.critic(storage.states).squeeze(-1)
             next_value = agent.critic(policy_obs(state)).squeeze(-1)
+
+        # bootstrap the reward for steps where env truncated
+        storage.rewards += agent.gamma * values * storage.truncs
+
+        # accumulate episode/term rewards, after bootstrapping
+        for step in range(num_steps):
+            tracker.record_step(
+                storage.rewards[step], storage.dones[step], storage.term_rewards[step]
+            )
 
         # compute GAE advantages and returns
         with profile_zone(4, "compute_gae"):
             advantages, returns = agent.compute_gae(
-                storage.rewards, storage.values, storage.dones, next_value
+                storage.rewards, values, storage.dones, next_value
             )
 
         # update actor and critic networks
@@ -252,9 +247,9 @@ def train(args_cli):
                 storage.log_probs,
                 returns,
                 advantages,
-                storage.values,
+                values,
                 storage.mus,
-                storage.stds,
+                std,
                 epochs=cfg.num_learning_epochs,
                 num_mini_batches=cfg.num_mini_batches,
             )
@@ -263,7 +258,7 @@ def train(args_cli):
         with profile_zone(6, "logging/cli"):
             # reduce rollout into episode statistics (reward stats forward-filled
             # if no episodes completed this rollout; num_episodes is zero then).
-            stats = tracker.summarize(storage.entropies)
+            stats = tracker.summarize(agent.entropy())
 
             logging_dict = {
                 "train/avg_reward": stats.avg_reward,

@@ -11,7 +11,7 @@ from ryan_ppo.normalization import ObsNormalization
 
 # bounds for the policy log-std. the mu for each joint is tanh activated, bounding
 # them to [-1, 1]. this clamping prevents the log-std from becoming too large.
-LOG_STD_MIN = np.log(0.05)
+LOG_STD_MIN = np.log(0.005)
 LOG_STD_MAX = np.log(1.0)
 
 # currently training with a binary gripper action, and I am using this to prevent
