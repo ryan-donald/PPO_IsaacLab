@@ -306,6 +306,12 @@ class PPOAgent:
                     std_old,
                 )
 
+                # gradient descent step, with a clipped gradient norm. called here
+                # to queue calculation on gpu while kl calculation is performed
+                # and moved gpu-cpu.
+                self.optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+
                 batch_kl = kl.item()
                 if math.isnan(batch_kl):
                     raise RuntimeError(
@@ -329,10 +335,6 @@ class PPOAgent:
 
                 if kl_abort:
                     break
-
-                # gradient descent step, with a clipped gradient norm
-                self.optimizer.zero_grad(set_to_none=True)
-                loss.backward()
 
                 torch.nn.utils.clip_grad_norm_(
                     self.actor_params + self.critic_params,
