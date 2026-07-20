@@ -7,6 +7,26 @@ This is a repository containing my implementation of the Proximal Policy Optimiz
 
 <img width="720" height="405" alt="so101_reach" src="https://github.com/user-attachments/assets/a04e37d7-f6f0-4f09-af24-27157c920124" />
 
+# Benchmarks
+I benchmarked this implementation against the four RL libraries bundled with Isaac Lab — [rsl_rl](https://github.com/leggedrobotics/rsl_rl), [rl_games](https://github.com/Denys88/rl_games), [skrl](https://github.com/Toni-SM/skrl), and [sb3](https://github.com/DLR-RM/stable-baselines3) — on the `Ryan-Reach-SO-ARM101-Normalized-v0` task. Every run used identical settings on the same GPU (RTX 3070): 12,288 parallel environments, 4,000 iterations, 24 steps/env, seed 42, headless. The library agent configs are hyperparameter-matched to `ryan_ppo`.
+
+| Framework | Throughput (steps/s) | In-loop steps/s¹ | Wall-clock (min) | Peak reward | Time to competent policy² |
+|---|---:|---:|---:|---:|---:|
+| **ryan_ppo (this repo)** | **1,320,001** | **1,208,656** | **15.7** | **1.094** | 2.4 min |
+| rl_games | 1,077,524 | 1,092,267 | 18.9 | 0.929 | 2.4 min |
+| skrl | 1,061,668 | 1,084,235 | 19.2 | 0.123 | — |
+| rsl_rl | 834,752 | 845,020 | 24.2 | 0.570 | 2.8 min |
+| sb3 | 619,342 | — | 32.4 | 0.572 | 4.7 min |
+
+<sub>¹ Rollout + full 5-epoch update per iteration, excluding logging/checkpoint overhead. `ryan_ppo`'s update time counts only iterations that ran all 5 epochs, so KL early-stopping isn't credited. sb3 logs no rollout/update split.<br>² Wall-clock to first reach a mean episode reward of 0.5, indicating a competent reach policy. skrl never reached it.</sub>
+
+This implementation delivers the **highest training throughput** — ~22% faster end-to-end than the next-quickest library and 2.1× faster than SB3 — the **fastest wall-clock** time to complete the run, and the **highest peak reward** of any framework tested. It reaches a competent policy as quickly as the fastest library while converging to a substantially higher peak.
+
+<div align="center">
+  <img src="https://raw.githubusercontent.com/ryan-donald/ppo/main/images/benchmark_reward_vs_time.png" width="100%" alt="Reward vs wall-clock time" />
+  <img src="https://raw.githubusercontent.com/ryan-donald/ppo/main/images/benchmark_reward_vs_steps.png" width="100%" alt="Reward vs environment steps" />
+</div>
+
 # Quickstart
 To use this package, follow the steps below:
 
