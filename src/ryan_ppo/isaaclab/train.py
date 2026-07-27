@@ -44,6 +44,8 @@ def train(args_cli):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    torch.set_float32_matmul_precision("high")
+
     @contextmanager
     def profile_zone(zone_id, name):
         # wraps a block in a carb.profiler zone; no-op when profiling is off.
@@ -78,6 +80,9 @@ def train(args_cli):
 
     # get environment-specific training configuration
     cfg = TrainConfig.from_ini(get_cfg_path(args_cli.task))
+
+    if args_cli.max_iterations is not None:
+        cfg.max_iterations = args_cli.max_iterations
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run = wandb.init(
@@ -185,10 +190,6 @@ def train(args_cli):
             # handle both Dict and Box observation spaces
             state_obs = policy_obs(state)
 
-            # update normalization statistics
-            if cfg.use_normalization:
-                agent.actor.update_normalization(state_obs)
-
             # select action from policy
             with profile_zone(2, "select_action"), torch.no_grad():
                 action, log_prob, mu, std = agent.select_action(state_obs)
@@ -216,6 +217,10 @@ def train(args_cli):
             # update state for next step
             state = next_state
 
+        # update normalization statistics in one call per rollout.
+        if cfg.use_normalization:
+            agent.actor.update_normalization(storage.states.view(-1, state_dim))
+
         rollout_time = time.perf_counter() - rollout_start
 
         # critic values for the whole rollout in one batched forward pass.
@@ -223,14 +228,14 @@ def train(args_cli):
             values = agent.critic(storage.states).squeeze(-1)
             next_value = agent.critic(policy_obs(state)).squeeze(-1)
 
-        # bootstrap the reward for steps where env truncated
-        storage.rewards += agent.gamma * values * storage.truncs
-
-        # accumulate episode/term rewards, after bootstrapping
+        # accumulate episode/term rewards
         for step in range(num_steps):
             tracker.record_step(
                 storage.rewards[step], storage.dones[step], storage.term_rewards[step]
             )
+
+        # bootstrap the reward for steps where env truncated
+        storage.rewards += agent.gamma * values * storage.truncs
 
         # compute GAE advantages and returns
         with profile_zone(4, "compute_gae"):
@@ -270,6 +275,8 @@ def train(args_cli):
                 "train/episodes": stats.num_episodes,
                 "train/avg_entropy": stats.avg_entropy,
                 "train/update_epochs": update_epochs,
+                "perf/rollout_time": rollout_time,
+                "perf/update_time": update_time,
             }
 
             for t_name in term_names:
@@ -363,6 +370,12 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, default=None, help="Name of the task.")
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility."
+    )
+    parser.add_argument(
+        "--max_iterations",
+        type=int,
+        default=None,
+        help="Override the config file's max_iterations.",
     )
     parser.add_argument(
         "--sweep", action="store_true", help="Enable WandB parameter sweeping."

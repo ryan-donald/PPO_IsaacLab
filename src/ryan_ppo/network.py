@@ -9,11 +9,6 @@ import torch.nn.functional as F
 
 from ryan_ppo.normalization import ObsNormalization
 
-# bounds for the policy log-std. the mu for each joint is tanh activated, bounding
-# them to [-1, 1]. this clamping prevents the log-std from becoming too large.
-LOG_STD_MIN = np.log(0.005)
-LOG_STD_MAX = np.log(1.0)
-
 # currently training with a binary gripper action, and I am using this to prevent
 # std collapsing very far from the mean for the gripper.
 # I don't think this is necessary, but I am using it for testing currently.
@@ -55,21 +50,15 @@ class Actor(nn.Module):
                 nn.init.orthogonal_(module.weight, gain=0.01)
                 nn.init.constant_(module.bias, 0.0)
 
-    def forward(
-        self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # normalize observations, then forward pass
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if self.obs_normalizer:
             x = self.obs_normalizer(x)
 
         for layer in self.hidden_layers:
             x = F.elu(layer(x))
-        # pre-tanh values are returned, used to calculate the saturation loss in
-        # update.
-        pre_tanh = self.output_layer(x)
-        mu = torch.tanh(pre_tanh)
+        mu = self.output_layer(x)
         std = torch.exp(self.log_std)
-        return mu, std, pre_tanh
+        return mu, std
 
     def update_normalization(self, obs: torch.Tensor) -> None:
         # update observation normalization statistics

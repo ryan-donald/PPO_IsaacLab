@@ -8,23 +8,44 @@ This is a repository containing my implementation of the Proximal Policy Optimiz
 <img width="720" height="405" alt="so101_reach" src="https://github.com/user-attachments/assets/a04e37d7-f6f0-4f09-af24-27157c920124" />
 
 # Benchmarks
-I benchmarked this implementation against the four RL libraries bundled with Isaac Lab — [rsl_rl](https://github.com/leggedrobotics/rsl_rl), [rl_games](https://github.com/Denys88/rl_games), [skrl](https://github.com/Toni-SM/skrl), and [sb3](https://github.com/DLR-RM/stable-baselines3) — on the `Ryan-Reach-SO-ARM101-Normalized-v0` task. Every run used identical settings on the same GPU (RTX 3070): 12,288 parallel environments, 5,000 iterations, 24 steps/env, seed 42, headless. The library agent configs are hyperparameter-matched to `ryan_ppo`.
+I benchmarked this implementation against the four RL libraries bundled with Isaac Lab — [rsl_rl](https://github.com/leggedrobotics/rsl_rl), [rl_games](https://github.com/Denys88/rl_games), [skrl](https://github.com/Toni-SM/skrl), and [sb3](https://github.com/DLR-RM/stable-baselines3) — across three tasks of increasing difficulty: `Ryan-Cartpole-v0`, `Ryan-Ant-v0`, and `Ryan-Reach-SO-ARM101-Normalized-v0`. Every run used identical settings on the same GPU (RTX 3070) under Isaac Lab 3.0: 12,288 parallel environments, headless, and each library's agent config hyperparameter-matched to `ryan_ppo`. Each framework was run over **three seeds (42, 43, 44)**; the tables report the seed-averaged best mean episode reward reached during training, since the best checkpoint is the one deployed.
 
-| Framework | Throughput (steps/s) | In-loop steps/s¹ | Wall-clock (min) | Peak reward |
-|---|---:|---:|---:|---:|
-| **ryan_ppo (this repo)** | **1,318,958** | **1,203,722** | **19.4** | **1.116** |
-| rl_games | 1,095,614 | 1,108,692 | 23.1 | 0.929 |
-| skrl | 1,093,362 | 1,117,091 | 23.1 | 0.128 |
-| rsl_rl | 849,237 | 857,302 | 29.6 | 0.569 |
-| sb3 | 617,388 | — | 40.6 | 0.567 |
+**Cartpole** — 1,000 iterations, 16 steps/env
 
-<sub>¹ Rollout + full 5-epoch update per iteration, excluding logging/checkpoint overhead. `ryan_ppo`'s update time counts only iterations that ran all 5 epochs, so KL early-stopping isn't credited. sb3 logs no rollout/update split.</sub>
+| Framework | Throughput (steps/s) | Wall-clock (min) | Best reward |
+|---|---:|---:|---:|
+| **ryan_ppo (this repo)** | **1,243,830** | **3.0** | 4.961 |
+| rl_games | 1,093,053 | 3.3 | 4.962 |
+| skrl | 1,073,521 | 3.3 | 4.956 |
+| rsl_rl | 1,033,656 | 3.4 | 4.958 |
+| sb3 | 666,278 | 5.2 | 4.297 |
 
-This implementation delivers the **highest training throughput** — ~20% faster end-to-end than the next-quickest library and 2.1× faster than SB3 — the **fastest wall-clock** time to complete the run, and the **highest peak reward** of any framework tested. The learning curves below show it converging to — and holding — a substantially higher peak than any other framework, while the other libraries plateau well below it.
+**Ant** — 2,000 iterations, 32 steps/env
+
+| Framework | Throughput (steps/s) | Wall-clock (min) | Best reward |
+|---|---:|---:|---:|
+| **ryan_ppo (this repo)** | **624,188** | **21.6** | **136.6** |
+| rsl_rl | 556,776 | 24.1 | 136.1 |
+| skrl | 555,062 | 24.2 | 114.6 |
+| rl_games | 554,338 | 24.2 | 129.1 |
+| sb3 | 387,591 | 34.4 | 134.3 |
+
+**Reach** — 7,500 iterations, 24 steps/env
+
+| Framework | Throughput (steps/s) | Wall-clock (min) | Best reward |
+|---|---:|---:|---:|
+| **ryan_ppo (this repo)** | **1,283,631** | **29.5** | **0.927** |
+| skrl | 1,084,497 | 34.7 | 0.861 |
+| rl_games | 1,072,870 | 35.1 | 0.900 |
+| rsl_rl | 844,198 | 44.3 | 0.640 |
+| sb3 | 627,026 | 59.5 | 0.727 |
+
+Across all three tasks, `ryan_ppo` posts the **highest throughput and fastest wall-clock** of any framework tested — 12–18% ahead of the next-quickest library, and up to 2× faster end-to-end than SB3. Its reward is **at or above the best of any library** on every task: it ties the field on Cartpole, edges rsl_rl for the top spot on Ant (while finishing several minutes sooner), and reaches the highest reward on Reach. On Reach it also *holds* that peak — where the other frameworks peak mid-run and then regress toward ~0.6, `ryan_ppo` stays near its best through the end of training (final ≈ 0.91 vs best ≈ 0.93).
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/ryan-donald/ppo/main/images/benchmark_reward_vs_time.png" width="100%" alt="Reward vs wall-clock time" />
-  <img src="https://raw.githubusercontent.com/ryan-donald/ppo/main/images/benchmark_reward_vs_steps.png" width="100%" alt="Reward vs environment steps" />
+  <img src="https://raw.githubusercontent.com/ryan-donald/ppo/main/images/benchmark_cartpole_reward_vs_time.png" width="100%" alt="Cartpole reward vs wall-clock time" />
+  <img src="https://raw.githubusercontent.com/ryan-donald/ppo/main/images/benchmark_ant_reward_vs_time.png" width="100%" alt="Ant reward vs wall-clock time" />
+  <img src="https://raw.githubusercontent.com/ryan-donald/ppo/main/images/benchmark_reach_reward_vs_time.png" width="100%" alt="Reach reward vs wall-clock time" />
 </div>
 
 # Quickstart

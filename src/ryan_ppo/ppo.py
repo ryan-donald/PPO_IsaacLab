@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 
 import torch
 import torch.optim as optim
@@ -8,8 +9,6 @@ import torch.optim as optim
 from ryan_ppo.config import TrainConfig
 from ryan_ppo.network import (
     GRIPPER_LOG_STD_MIN,
-    LOG_STD_MAX,
-    LOG_STD_MIN,
     Actor,
     Critic,
 )
@@ -20,10 +19,13 @@ KL_LR_DECREASE_FACTOR = 2.0
 KL_LR_INCREASE_FACTOR = 2.0
 KL_EPOCH_STOP_FACTOR = 1.5
 LR_ADJUST_RATIO = 1.5
-MIN_LR = 1e-5
-MAX_LR = 1e-3
 
 LOG_SQRT_2PI = 0.5 * math.log(2 * math.pi)
+
+# performance improvements by adjusting compile mode for minibatch loss.
+COMPILE_MODE = os.environ.get("RYAN_PPO_COMPILE_MODE", "max-autotune-no-cudagraphs")
+if COMPILE_MODE == "default":
+    COMPILE_MODE = None
 
 
 def strip_compile_prefix(state_dict: dict) -> dict:
@@ -48,23 +50,33 @@ class PPOAgent:
         self.device = device
 
         self.actor = Actor(
-            state_dim, action_dim, cfg.hidden_dims, self.obs_normalizer
+            state_dim,
+            action_dim,
+            cfg.hidden_dims,
+            self.obs_normalizer,
         ).to(device)
         self.critic = Critic(state_dim, cfg.hidden_dims, self.obs_normalizer).to(device)
 
         # per-dim lower bound on log_std. only tasks whose last action dim is a
         # binary gripper raise that dim's floor
-        self.log_std_min = torch.full((action_dim,), float(LOG_STD_MIN), device=device)
+        self.log_std_min = torch.full(
+            (action_dim,), math.log(cfg.std_min), device=device
+        )
         if cfg.has_gripper_action:
             self.log_std_min[-1] = float(GRIPPER_LOG_STD_MIN)
+        self.log_std_max = math.log(cfg.std_max)
 
         self.actor_params = list(self.actor.parameters())
         self.critic_params = list(self.critic.parameters())
 
+        # learning rate stored as tensor for speed.
+        self.lr_t = torch.tensor(float(cfg.learning_rate), device=device)
+
         self.optimizer = optim.Adam(
             self.actor_params + self.critic_params,
-            lr=cfg.learning_rate,
+            lr=self.lr_t,
             fused=(device.type == "cuda"),
+            foreach=False if device.type != "cuda" else None,
         )
 
         # allows saving of non-compiled weights.
@@ -80,13 +92,37 @@ class PPOAgent:
         self.clip_epsilon = cfg.clip_epsilon
         self.max_grad_norm = cfg.max_grad_norm
         self.entropy_coef = cfg.entropy_coef
-        self.saturation_coef = cfg.saturation_coef
         self.value_coef = cfg.value_coef
         self.desired_kl = cfg.desired_kl
         self.schedule_type = cfg.schedule_type
-        self.current_lr = cfg.learning_rate
+        self.max_lr = cfg.max_lr
+        self.min_lr = cfg.min_lr
+        self.kl_early_stop = cfg.kl_early_stop
 
         self.update_count = 0
+
+    @property
+    def current_lr(self) -> float:
+        # GPU to CPU sync for storing/logging learning rate.
+        return self.lr_t.item()
+
+    @current_lr.setter
+    def current_lr(self, value: float) -> None:
+        self.lr_t.fill_(float(value))
+
+    def adapt_lr_device(self, kl: torch.Tensor) -> None:
+        # adaptive kl, but done on GPU fully for speed.
+        lr = self.lr_t
+        adjusted = torch.where(
+            kl > self.desired_kl * KL_LR_DECREASE_FACTOR,
+            lr / LR_ADJUST_RATIO,
+            torch.where(
+                (kl > 0.0) & (kl < self.desired_kl / KL_LR_INCREASE_FACTOR),
+                lr * LR_ADJUST_RATIO,
+                lr,
+            ),
+        )
+        self.lr_t.copy_(adjusted.clamp_(self.min_lr, self.max_lr))
 
     def save_checkpoint(self, path: str, iteration: int) -> None:
         # save a complete checkpoint for resuming training. includes weights,
@@ -111,7 +147,7 @@ class PPOAgent:
 
         checkpoint = torch.load(path, map_location=self.device)
         self.actor_module.load_state_dict(strip_compile_prefix(checkpoint["actor"]))
-        self.actor.log_std.data.clamp_(max=LOG_STD_MAX)
+        self.actor.log_std.data.clamp_(max=self.log_std_max)
         torch.maximum(
             self.actor.log_std.data, self.log_std_min, out=self.actor.log_std.data
         )
@@ -139,7 +175,7 @@ class PPOAgent:
         self, state_obs: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # performs forward pass, gaussian sample, and log_prob in one compiled function
-        mu, std, _ = self.actor_module(state_obs)
+        mu, std = self.actor_module(state_obs)
         action = torch.addcmul(mu, std, torch.randn_like(mu))
         log_prob = (
             -0.5 * ((action - mu) / std).square()
@@ -183,7 +219,7 @@ class PPOAgent:
 
         return advantages, returns
 
-    @torch.compile
+    @torch.compile(mode=COMPILE_MODE)
     def minibatch_loss(
         self,
         batch_states: torch.Tensor,
@@ -198,7 +234,7 @@ class PPOAgent:
         # single minibatch loss and kl in a single compiled function.
 
         # calculate log_probs for current policy.
-        mu, std, pre_tanh = self.actor_module(batch_states)
+        mu, std = self.actor_module(batch_states)
 
         log_probs = (
             -0.5 * ((batch_actions - mu) / std).square()
@@ -234,15 +270,10 @@ class PPOAgent:
         )
         value_losses = (values - batch_returns).pow(2)
         value_losses_clipped = (value_pred_clipped - batch_returns).pow(2)
-        critic_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
+        critic_loss = torch.max(value_losses, value_losses_clipped).mean()
 
         # total loss
-        loss = (
-            actor_loss
-            + self.value_coef * critic_loss
-            - self.entropy_coef * entropy
-            + self.saturation_coef * pre_tanh.pow(2).mean()
-        )
+        loss = actor_loss + self.value_coef * critic_loss - self.entropy_coef * entropy
 
         return loss, kl
 
@@ -278,7 +309,9 @@ class PPOAgent:
         dataset_size = b_states.shape[0]
         batch_size = dataset_size // num_mini_batches
 
-        mean_kl = 0
+        # accumulates KL when not using early stopping to prevent GPU to CPU syncs.
+        kl_sum = torch.zeros((), device=self.device)
+        mean_kl = 0.0
         num_updates = 0
         kl_abort = False
 
@@ -312,38 +345,34 @@ class PPOAgent:
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
 
-                batch_kl = kl.item()
-                if math.isnan(batch_kl):
-                    raise RuntimeError(
-                        f"KL is NaN at update {self.update_count}, epoch {epoch}"
-                    )
-                epoch_kl += batch_kl
                 epoch_updates += 1
                 num_updates += 1
 
-                # kl early stopping per minibatch
-                if batch_kl > self.desired_kl * KL_ABORT_FACTOR:
-                    kl_abort = True
+                if self.kl_early_stop:
+                    batch_kl = kl.item()
+                    if math.isnan(batch_kl):
+                        raise RuntimeError(
+                            f"KL is NaN at update {self.update_count}, epoch {epoch}"
+                        )
+                    epoch_kl += batch_kl
 
-                if self.schedule_type == "adaptive":
-                    if batch_kl > self.desired_kl * KL_LR_DECREASE_FACTOR:
-                        self.current_lr = max(MIN_LR, self.current_lr / LR_ADJUST_RATIO)
-                    elif 0.0 < batch_kl < self.desired_kl / KL_LR_INCREASE_FACTOR:
-                        self.current_lr = min(MAX_LR, self.current_lr * LR_ADJUST_RATIO)
-                    for param_group in self.optimizer.param_groups:
-                        param_group["lr"] = self.current_lr
+                    # kl early stopping per minibatch
+                    if batch_kl > self.desired_kl * KL_ABORT_FACTOR:
+                        kl_abort = True
+                        break
+                else:
+                    # no kl early stopping.
+                    kl_sum += kl.detach()
+                    if self.schedule_type == "adaptive":
+                        self.adapt_lr_device(kl.detach())
 
-                if kl_abort:
-                    break
-
-                torch.nn.utils.clip_grad_norm_(
-                    self.actor_params + self.critic_params,
-                    self.max_grad_norm,
-                )
+                # clip actor and critic norms seperately, as they can interfere.
+                torch.nn.utils.clip_grad_norm_(self.actor_params, self.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self.critic_params, self.max_grad_norm)
                 self.optimizer.step()
 
                 # clamp log_std post optimizer to keep gradients useful
-                self.actor.log_std.data.clamp_(max=LOG_STD_MAX)
+                self.actor.log_std.data.clamp_(max=self.log_std_max)
                 torch.maximum(
                     self.actor.log_std.data,
                     self.log_std_min,
@@ -351,13 +380,28 @@ class PPOAgent:
                 )
             mean_kl += epoch_kl
 
-            mean_epoch_kl = epoch_kl / epoch_updates
-            if kl_abort or mean_epoch_kl > self.desired_kl * KL_EPOCH_STOP_FACTOR:
-                break
+            if self.kl_early_stop:
+                mean_epoch_kl = epoch_kl / epoch_updates
+                if kl_abort or mean_epoch_kl > self.desired_kl * KL_EPOCH_STOP_FACTOR:
+                    break
 
-        # average KL divergence over all updates,
-        # adjust learning rate if using adaptive schedule
-        mean_kl = mean_kl / num_updates if num_updates > 0 else 0
+        # average KL divergence over all updates. different depending on how kl is
+        # stored based on kl early stopping enabled or not.
+        if self.kl_early_stop:
+            mean_kl = mean_kl / num_updates if num_updates > 0 else 0
+        else:
+            mean_kl = (kl_sum / num_updates).item() if num_updates > 0 else 0.0
+            if math.isnan(mean_kl):
+                raise RuntimeError(f"KL is NaN at update {self.update_count}")
+
+        # with kl early stopping, only update learning rate once per iteration, not per
+        # minibatch.
+        if self.schedule_type == "adaptive" and self.kl_early_stop:
+            if mean_kl > self.desired_kl * KL_LR_DECREASE_FACTOR:
+                self.current_lr = max(self.min_lr, self.current_lr / LR_ADJUST_RATIO)
+            elif 0.0 < mean_kl < self.desired_kl / KL_LR_INCREASE_FACTOR:
+                self.current_lr = min(self.max_lr, self.current_lr * LR_ADJUST_RATIO)
+
         self.update_count += 1
 
         # tracking how many actual epochs ran this update. i.e., how many before kl

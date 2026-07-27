@@ -8,13 +8,13 @@ class ObsNormalization(nn.Module):
     Mean and Variance for a distribution.
     """
 
-    def __init__(self, state_dim: int, epsilon: float = 1e-5):
+    def __init__(self, state_dim: int, epsilon: float = 1e-2):
         super().__init__()
 
         self.epsilon = epsilon
 
         self.register_buffer("mean", torch.zeros(state_dim))
-        self.register_buffer("var", torch.zeros(state_dim))
+        self.register_buffer("var", torch.ones(state_dim))
         self.register_buffer("count", torch.tensor(1e-4, dtype=torch.float32))
 
     def update(self, x: torch.Tensor):
@@ -33,5 +33,5 @@ class ObsNormalization(nn.Module):
         self.count.copy_(total_count)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        std = torch.sqrt(self.var + self.epsilon)
+        std = torch.sqrt(self.var) + self.epsilon
         return (x - self.mean) / std
