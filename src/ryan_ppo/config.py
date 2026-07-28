@@ -22,8 +22,12 @@ class TrainConfig:
     max_iterations: int
     use_normalization: bool
     hidden_dims: list[int]
-    saturation_coef: float = 1e-3
     has_gripper_action: bool = False
+    max_lr: float = 1e-3
+    min_lr: float = 1e-5
+    std_min: float = 0.005
+    std_max: float = 1.0
+    kl_early_stop: bool = False
 
     @classmethod
     def from_ini(cls, path):
@@ -48,8 +52,12 @@ class TrainConfig:
             max_iterations=train.getint("max_iterations"),
             use_normalization=train.getboolean("use_normalization"),
             hidden_dims=[int(x) for x in config["policy"]["hidden_dims"].split(",")],
-            saturation_coef=train.getfloat("saturation_coef", fallback=1e-3),
             has_gripper_action=train.getboolean("has_gripper_action", fallback=False),
+            max_lr=train.getfloat("max_lr", fallback=1e-3),
+            min_lr=train.getfloat("min_lr", fallback=1e-5),
+            std_min=train.getfloat("std_min", fallback=0.005),
+            std_max=train.getfloat("std_max", fallback=1.0),
+            kl_early_stop=train.getboolean("kl_early_stop", fallback=False),
         )
 
     def apply_sweep(self, sweep):

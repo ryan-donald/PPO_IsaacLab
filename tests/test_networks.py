@@ -27,7 +27,7 @@ def test_actor_forward():
 
     random_input = torch.randn(batch_size, state_dim)
 
-    mu, std, _ = actor(random_input)
+    mu, std = actor(random_input)
 
     assert mu.shape == (batch_size, action_dim)
     assert std.shape == (action_dim,)

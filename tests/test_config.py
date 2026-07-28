@@ -63,8 +63,6 @@ def test_from_ini(tmp_path):
     assert cfg.use_normalization is True
     assert cfg.has_gripper_action is True
     assert cfg.hidden_dims == [256, 128, 64]
-    # fallback for a key absent from the file
-    assert cfg.saturation_coef == 1e-3
 
 
 def test_from_ini_layers_defaults(tmp_path):

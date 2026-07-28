@@ -39,7 +39,7 @@ def test_agent_init():
     random_input = torch.randn(batch_size, state_dim)
 
     critic_output = agent.critic.forward(random_input)
-    mu, std, _ = agent.actor.forward(random_input)
+    mu, std = agent.actor.forward(random_input)
 
     assert critic_output.shape == (batch_size, 1), (
         "Critic output should be (batch_size, 1)"
