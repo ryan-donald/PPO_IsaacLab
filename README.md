@@ -85,16 +85,3 @@ Across all three tasks, `ryan_ppo` posts the **highest throughput and fastest wa
   <img src="https://raw.githubusercontent.com/ryan-donald/ppo/main/images/benchmark_ant_reward_vs_time.png" width="100%" alt="Ant reward vs wall-clock time" />
   <img src="https://raw.githubusercontent.com/ryan-donald/ppo/main/images/benchmark_reach_reward_vs_time.png" width="100%" alt="Reach reward vs wall-clock time" />
 </div>
-
-# Script Structure
-The main structure of this repository is as follows:  
-* network.py - Contains the *Actor* and *Critic* network classes, used to represent the policy and value functions in the PPO algorithm.  
-  
-* ppo.py - Contains the *PPOAgent* class, which stores and configures the various hyper-parameters of the algorithm, as well as the following functions:  
-  * *select_action* - Selects an action based upon an observation and the current policy.  
-  * *compute_gae* - Computes the normalized Generalized Advantage Estimates at each step of the roll-out, as well as the returns.  
-  * *update* - Performs the update portion of the PPO algorithm. Given a rollout, this function performs a number of updates, each with a number of mini-batches from the main rollout data.  
-
-* train.py - Contains the training loop, any initialization code, and calls functions to implement the entire PPO algorithm.  
-  
-* config.py - Parses per-task hyper-parameter files from the 'cfg/' directory. Shared values live in 'cfg/defaults.ini'; each task's .ini file only sets the values that differ from those defaults.
