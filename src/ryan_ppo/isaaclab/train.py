@@ -1,4 +1,5 @@
 import argparse
+import sys
 
 import typing_extensions  # noqa: F401 # for profiling so torch doesnt break
 from isaaclab.app import AppLauncher
@@ -19,6 +20,7 @@ def train(args_cli):
         carb.profiler.begin(1, "train_loop")
 
     import os
+    import pathlib
     import random
     import signal
     import time
@@ -28,6 +30,7 @@ def train(args_cli):
     import gymnasium as gym
     import isaaclab_tasks  # noqa: F401
     import numpy as np
+    import rich.traceback
     import torch
     import wandb
     from isaaclab_tasks.utils import parse_env_cfg
@@ -39,6 +42,12 @@ def train(args_cli):
     from ryan_ppo.storage import RolloutStorage
     from ryan_ppo.tracking import EpisodeTracker
     from ryan_ppo.utils import generate_table, get_cfg_path, policy_obs
+
+    isaaclab_src = pathlib.Path(sys.modules["isaaclab"].__file__).parents[2]
+    rich.traceback.install(
+        # show_locals=True,
+        suppress=[str(isaaclab_src), gym]
+    )
 
     # set device before using it in class instantiation
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -412,8 +421,6 @@ if __name__ == "__main__":
 
     # parse the arguments
     args_cli, _ = parser.parse_known_args()
-
-    import sys
 
     if args_cli.profile:
         print("Profiling enabled using carb.profiler with Tracy backend.")
