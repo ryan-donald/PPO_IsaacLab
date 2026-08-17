@@ -28,6 +28,7 @@ class TrainConfig:
     std_min: float = 0.005
     std_max: float = 1.0
     kl_early_stop: bool = False
+    stagger_initial_episodes: bool = True
 
     @classmethod
     def from_ini(cls, path):
@@ -58,6 +59,9 @@ class TrainConfig:
             std_min=train.getfloat("std_min", fallback=0.005),
             std_max=train.getfloat("std_max", fallback=1.0),
             kl_early_stop=train.getboolean("kl_early_stop", fallback=False),
+            stagger_initial_episodes=train.getboolean(
+                "stagger_initial_episodes", fallback=True
+            ),
         )
 
     def apply_sweep(self, sweep):

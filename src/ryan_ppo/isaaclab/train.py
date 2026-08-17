@@ -48,6 +48,7 @@ def train(args_cli):
         # show_locals=True,
         suppress=[str(isaaclab_src), gym]
     )
+    rich_excepthook = sys.excepthook
 
     # set device before using it in class instantiation
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -100,6 +101,10 @@ def train(args_cli):
         settings={"console": "off"},
     )
 
+    # need to reset to excepthook from rich. if not, wandb will print base traceback,
+    # then rich will print traceback.
+    sys.excepthook = rich_excepthook
+
     if args_cli.sweep:
         cfg.apply_sweep(wandb.config)
 
@@ -116,6 +121,13 @@ def train(args_cli):
     # reset environment
     state, info = env.reset()
     num_envs = env.unwrapped.num_envs
+
+    # initializes each env to a random step number in [0, episode_length].
+    if cfg.stagger_initial_episodes:
+        ep_len_buf = env.unwrapped.episode_length_buf
+        env.unwrapped.episode_length_buf = torch.randint_like(
+            ep_len_buf, high=int(env.unwrapped.max_episode_length)
+        )
 
     steps_per_rollout = cfg.num_steps_per_env * num_envs  # 24 * num_envs
     num_steps = cfg.num_steps_per_env
@@ -141,6 +153,7 @@ def train(args_cli):
     # per-term reward logging
     reward_manager = env.unwrapped.reward_manager
     term_names = reward_manager.active_terms
+    step_dt = env.unwrapped.step_dt
 
     # tracks episode/term rewards across each rollout, forward-filling reward stats
     # when a rollout has zero completed episodes.
@@ -219,7 +232,7 @@ def train(args_cli):
                 reward=reward,
                 done=done.float(),
                 trunc=truncated.float(),
-                term_reward=reward_manager._step_reward.detach(),
+                term_reward=reward_manager._step_reward.detach() * step_dt,
                 mu=mu,
             )
 
@@ -435,4 +448,15 @@ if __name__ == "__main__":
             ]
         )
 
-    train(args_cli)
+    try:
+        train(args_cli)
+    except KeyboardInterrupt:
+        import wandb
+
+        wandb.finish(exit_code=255)
+        sys.exit(130)
+    except BaseException:
+        import wandb
+
+        wandb.finish(exit_code=1)
+        raise
