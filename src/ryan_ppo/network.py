@@ -9,11 +9,6 @@ import torch.nn.functional as F
 
 from ryan_ppo.normalization import ObsNormalization
 
-# currently training with a binary gripper action, and I am using this to prevent
-# std collapsing very far from the mean for the gripper.
-# I don't think this is necessary, but I am using it for testing currently.
-GRIPPER_LOG_STD_MIN = np.log(0.3)
-
 
 class Actor(nn.Module):
     def __init__(

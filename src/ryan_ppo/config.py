@@ -22,7 +22,6 @@ class TrainConfig:
     max_iterations: int
     use_normalization: bool
     hidden_dims: list[int]
-    has_gripper_action: bool = False
     max_lr: float = 1e-3
     min_lr: float = 1e-5
     std_min: float = 0.005
@@ -53,7 +52,6 @@ class TrainConfig:
             max_iterations=train.getint("max_iterations"),
             use_normalization=train.getboolean("use_normalization"),
             hidden_dims=[int(x) for x in config["policy"]["hidden_dims"].split(",")],
-            has_gripper_action=train.getboolean("has_gripper_action", fallback=False),
             max_lr=train.getfloat("max_lr", fallback=1e-3),
             min_lr=train.getfloat("min_lr", fallback=1e-5),
             std_min=train.getfloat("std_min", fallback=0.005),

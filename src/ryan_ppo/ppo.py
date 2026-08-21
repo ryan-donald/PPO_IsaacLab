@@ -7,11 +7,7 @@ import torch
 import torch.optim as optim
 
 from ryan_ppo.config import TrainConfig
-from ryan_ppo.network import (
-    GRIPPER_LOG_STD_MIN,
-    Actor,
-    Critic,
-)
+from ryan_ppo.network import Actor, Critic
 from ryan_ppo.normalization import ObsNormalization
 
 KL_ABORT_FACTOR = 4.0
@@ -57,13 +53,7 @@ class PPOAgent:
         ).to(device)
         self.critic = Critic(state_dim, cfg.hidden_dims, self.obs_normalizer).to(device)
 
-        # per-dim lower bound on log_std. only tasks whose last action dim is a
-        # binary gripper raise that dim's floor
-        self.log_std_min = torch.full(
-            (action_dim,), math.log(cfg.std_min), device=device
-        )
-        if cfg.has_gripper_action:
-            self.log_std_min[-1] = float(GRIPPER_LOG_STD_MIN)
+        self.log_std_min = math.log(cfg.std_min)
         self.log_std_max = math.log(cfg.std_max)
 
         self.actor_params = list(self.actor.parameters())
@@ -147,10 +137,7 @@ class PPOAgent:
 
         checkpoint = torch.load(path, map_location=self.device)
         self.actor_module.load_state_dict(strip_compile_prefix(checkpoint["actor"]))
-        self.actor.log_std.data.clamp_(max=self.log_std_max)
-        torch.maximum(
-            self.actor.log_std.data, self.log_std_min, out=self.actor.log_std.data
-        )
+        self.actor.log_std.data.clamp_(min=self.log_std_min, max=self.log_std_max)
         self.critic_module.load_state_dict(strip_compile_prefix(checkpoint["critic"]))
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.current_lr = checkpoint["current_lr"]
@@ -372,11 +359,8 @@ class PPOAgent:
                 self.optimizer.step()
 
                 # clamp log_std post optimizer to keep gradients useful
-                self.actor.log_std.data.clamp_(max=self.log_std_max)
-                torch.maximum(
-                    self.actor.log_std.data,
-                    self.log_std_min,
-                    out=self.actor.log_std.data,
+                self.actor.log_std.data.clamp_(
+                    min=self.log_std_min, max=self.log_std_max
                 )
             mean_kl += epoch_kl
 
