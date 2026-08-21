@@ -16,7 +16,6 @@ desired_kl = 0.016
 max_grad_norm = 1.0
 gamma = 0.98
 use_normalization = True
-has_gripper_action = True
 
 [policy]
 hidden_dims = 256,128,64
@@ -46,7 +45,7 @@ hidden_dims = 256,128,64
 DELTA_INI = """
 [train]
 learning_rate = 0.001
-has_gripper_action = True
+kl_early_stop = True
 """
 
 
@@ -61,7 +60,6 @@ def test_from_ini(tmp_path):
     assert cfg.max_iterations == 15000
     assert cfg.schedule_type == "adaptive"
     assert cfg.use_normalization is True
-    assert cfg.has_gripper_action is True
     assert cfg.hidden_dims == [256, 128, 64]
 
 
@@ -73,6 +71,6 @@ def test_from_ini_layers_defaults(tmp_path):
 
     cfg = TrainConfig.from_ini(path)
     assert cfg.learning_rate == 0.001  # overridden by the task file
-    assert cfg.has_gripper_action is True  # only in the task file
+    assert cfg.kl_early_stop is True  # only in the task file
     assert cfg.gamma == 0.98  # from defaults
     assert cfg.hidden_dims == [256, 128, 64]  # from defaults
