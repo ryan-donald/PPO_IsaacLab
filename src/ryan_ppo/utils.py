@@ -1,7 +1,90 @@
+from __future__ import annotations
+
+import random
+import sys
+from contextlib import contextmanager
+from importlib import import_module
 from pathlib import Path
 
+import numpy as np
+import rich.traceback
+import torch
 from rich import box
 from rich.table import Table
+
+# libraries to suppress in rich traceback.
+SUPPRESSED_LIBRARIES = ("gymnasium",)
+
+
+def install_rich_traceback(show_locals: bool = False):
+    """
+    initialize the rich traceback, including suppressing specified libaries.
+    """
+    # every isaaclab package
+    isaaclab_root = Path(sys.modules["isaaclab"].__file__).parents[2]
+
+    suppress = [str(isaaclab_root)]
+    suppress += [import_module(name) for name in SUPPRESSED_LIBRARIES]
+
+    rich.traceback.install(suppress=suppress, show_locals=show_locals)
+    return sys.excepthook
+
+
+def get_device() -> torch.device:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    return device
+
+
+def set_seed(seed: int) -> None:
+    # seed python, numpy and torch, and pin cudnn to deterministic kernels.
+    print(f"Setting seed: {seed}")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def env_dims(env) -> tuple[int, int]:
+    # (state_dim, action_dim), for both Dict and Box observation spaces.
+    obs_space = env.observation_space
+    spaces = getattr(obs_space, "spaces", None)
+    if spaces is not None:
+        obs_space = spaces["policy"]
+    return obs_space.shape[1], env.action_space.shape[1]
+
+
+class Profiler:
+    """carb.profiler zones, or no-ops when profiling is off.
+
+    keeps the carb import and the `if args_cli.profile` guards out of train().
+    """
+
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self._carb = None
+        if enabled:
+            import carb.profiler
+
+            self._carb = carb.profiler
+
+    def begin(self, zone_id: int, name: str) -> None:
+        if self._carb:
+            self._carb.begin(zone_id, name)
+
+    def end(self, zone_id: int) -> None:
+        if self._carb:
+            self._carb.end(zone_id)
+
+    @contextmanager
+    def zone(self, zone_id: int, name: str):
+        self.begin(zone_id, name)
+        try:
+            yield
+        finally:
+            self.end(zone_id)
 
 
 def policy_obs(state):
@@ -26,7 +109,7 @@ def generate_table(
     train_dict: dict,
     rewards_dict: dict,
     title: str,
-    run_url: str = None,
+    run_url: str | None = None,
 ) -> Table:
     """
     Make table for display in terminal of current training run.

@@ -1,3 +1,7 @@
+import dataclasses
+
+import pytest
+
 from ryan_ppo.config import TrainConfig
 
 TASK_INI = """
@@ -45,7 +49,7 @@ hidden_dims = 256,128,64
 DELTA_INI = """
 [train]
 learning_rate = 0.001
-kl_early_stop = True
+std_min = 0.05
 """
 
 
@@ -71,6 +75,31 @@ def test_from_ini_layers_defaults(tmp_path):
 
     cfg = TrainConfig.from_ini(path)
     assert cfg.learning_rate == 0.001  # overridden by the task file
-    assert cfg.kl_early_stop is True  # only in the task file
+    assert cfg.std_min == 0.05  # only in the task file
     assert cfg.gamma == 0.98  # from defaults
     assert cfg.hidden_dims == [256, 128, 64]  # from defaults
+
+
+def test_from_ini_missing_required_key_raises(tmp_path):
+    # a required [train] key absent from both files is a config error, not a
+    # silent None that blows up later inside PPOAgent.
+    path = tmp_path / "task.ini"
+    path.write_text("[train]\ngamma = 0.99\n\n[policy]\nhidden_dims = 8,8\n")
+
+    with pytest.raises(KeyError, match="learning_rate"):
+        TrainConfig.from_ini(path)
+
+
+def test_from_ini_reads_every_field(tmp_path):
+    # from_ini drives off dataclasses.fields(), so a new field must be picked up
+    # without touching from_ini. this guards that wiring.
+    path = tmp_path / "task.ini"
+    extra = "max_lr = 0.02\nstagger_initial_episodes = False\n"
+    path.write_text(TASK_INI.replace("\n[policy]", f"{extra}\n[policy]"))
+
+    cfg = TrainConfig.from_ini(path)
+    for field in dataclasses.fields(TrainConfig):
+        assert getattr(cfg, field.name) is not None, field.name
+    assert cfg.max_lr == 0.02
+    assert cfg.stagger_initial_episodes is False
+    assert cfg.min_lr == 1e-5  # untouched optional field keeps its default

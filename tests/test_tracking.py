@@ -43,6 +43,23 @@ def test_episode_spanning_rollouts():
     assert stats.term_rewards["a"] == pytest.approx(2.0)
 
 
+def test_all_completions_counted():
+    # every episode finishing in the rollout contributes, not a fixed-size sample of
+    # them. env i finishes with return i, so the mean pins the whole population.
+    num_envs = 500
+    tracker = make_tracker(num_envs=num_envs, terms=("a",))
+    reward = torch.arange(num_envs, dtype=torch.float)
+
+    tracker.record_step(reward, torch.ones(num_envs), reward.unsqueeze(-1))
+    stats = tracker.summarize(avg_entropy=0.0)
+
+    assert stats.num_episodes == num_envs
+    assert stats.avg_reward == pytest.approx((num_envs - 1) / 2)
+    assert stats.min_reward == pytest.approx(0.0)
+    assert stats.max_reward == pytest.approx(num_envs - 1)
+    assert stats.term_rewards["a"] == pytest.approx(stats.avg_reward)
+
+
 def test_empty_rollout_forward_fills():
     tracker = make_tracker(num_envs=1, terms=("a",))
     term_r = torch.tensor([[1.0]])

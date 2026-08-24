@@ -1,6 +1,14 @@
 import configparser
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass, fields
 from pathlib import Path
+
+# configparser reader per field type.
+TYPE_READERS = {
+    "float": "getfloat",
+    "int": "getint",
+    "bool": "getboolean",
+    "str": "get",
+}
 
 
 @dataclass
@@ -26,7 +34,6 @@ class TrainConfig:
     min_lr: float = 1e-5
     std_min: float = 0.005
     std_max: float = 1.0
-    kl_early_stop: bool = False
     stagger_initial_episodes: bool = True
 
     @classmethod
@@ -36,31 +43,25 @@ class TrainConfig:
         config = configparser.ConfigParser()
         config.read([path.parent / "defaults.ini", path])
         train = config["train"]
-        return cls(
-            learning_rate=train.getfloat("learning_rate"),
-            gamma=train.getfloat("gamma"),
-            gae_lambda=train.getfloat("gae_lambda"),
-            value_coef=train.getfloat("value_coef"),
-            clip_epsilon=train.getfloat("clip_epsilon"),
-            max_grad_norm=train.getfloat("max_grad_norm"),
-            desired_kl=train.getfloat("desired_kl"),
-            entropy_coef=train.getfloat("entropy_coef"),
-            schedule_type=train["schedule_type"],
-            num_learning_epochs=train.getint("num_learning_epochs"),
-            num_steps_per_env=train.getint("num_steps_per_env"),
-            num_mini_batches=train.getint("num_mini_batches"),
-            max_iterations=train.getint("max_iterations"),
-            use_normalization=train.getboolean("use_normalization"),
-            hidden_dims=[int(x) for x in config["policy"]["hidden_dims"].split(",")],
-            max_lr=train.getfloat("max_lr", fallback=1e-3),
-            min_lr=train.getfloat("min_lr", fallback=1e-5),
-            std_min=train.getfloat("std_min", fallback=0.005),
-            std_max=train.getfloat("std_max", fallback=1.0),
-            kl_early_stop=train.getboolean("kl_early_stop", fallback=False),
-            stagger_initial_episodes=train.getboolean(
-                "stagger_initial_episodes", fallback=True
-            ),
-        )
+
+        kwargs = {}
+        for field in fields(cls):
+            if field.name == "hidden_dims":
+                continue
+            type_name = getattr(field.type, "__name__", field.type)
+            read = getattr(train, TYPE_READERS[type_name])
+            if field.default is not MISSING:
+                kwargs[field.name] = read(field.name, fallback=field.default)
+            elif field.name in train:
+                kwargs[field.name] = read(field.name)
+            else:
+                raise KeyError(
+                    f"{path}: required [train] key {field.name!r} is missing from "
+                    f"both the task file and defaults.ini"
+                )
+
+        hidden_dims = [int(x) for x in config["policy"]["hidden_dims"].split(",")]
+        return cls(hidden_dims=hidden_dims, **kwargs)
 
     def apply_sweep(self, sweep):
         # applys values from wandb sweep to current config.

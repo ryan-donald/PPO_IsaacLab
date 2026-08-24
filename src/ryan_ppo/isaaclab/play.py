@@ -14,47 +14,41 @@ def play(args_cli):
     simulation_app = app_launcher.app
 
     import os
-    import random
     from datetime import datetime
 
     import gymnasium as gym
-    import numpy as np
     import torch
     from isaaclab_tasks.utils import parse_env_cfg
 
     import ryan_tasks  # noqa: F401
     from ryan_ppo.config import TrainConfig
-    from ryan_ppo.ppo import PPOAgent
-    from ryan_ppo.utils import get_cfg_path, policy_obs
+    from ryan_ppo.ppo import PPOAgent, strip_compile_prefix
+    from ryan_ppo.utils import (
+        env_dims,
+        get_cfg_path,
+        get_device,
+        install_rich_traceback,
+        policy_obs,
+        set_seed,
+    )
 
-    # set device before using it in class instantiation
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    # the suppressed-library list lives in utils.install_rich_traceback.
+    install_rich_traceback()
 
-    # set seeds for reproducibility
-    seed = args_cli.seed
-    print(f"Setting seed: {seed}")
+    device = get_device()
 
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    set_seed(args_cli.seed)
 
     env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs
     )
+    env_cfg.seed = args_cli.seed
 
-    env_cfg.seed = seed
-
-    # create environment
+    # create environment. rgb_array rendering is only needed when recording.
     render_mode = "rgb_array" if args_cli.video else None
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=render_mode)
 
-    # wrap environment for video recording if requested
     if args_cli.video:
-        # create video directory with timestamp
         video_dir = os.path.join(
             "logs",
             "test_videos",
@@ -62,8 +56,6 @@ def play(args_cli):
             datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
         )
         os.makedirs(video_dir, exist_ok=True)
-
-        # wrap with RecordVideo
         env = gym.wrappers.RecordVideo(
             env,
             video_folder=video_dir,
@@ -71,53 +63,37 @@ def play(args_cli):
             video_length=args_cli.video_length,
             disable_logger=True,
         )
-    env.reset()
+        print(f"Recording video to {video_dir}")
 
-    # get environment-specific training configuration
+    # the task's config gives the network shape the checkpoint was trained with.
     cfg = TrainConfig.from_ini(get_cfg_path(args_cli.task))
 
-    # store state and action dimensions
-    if isinstance(env.observation_space, gym.spaces.Dict):
-        state_dim = env.observation_space["policy"].shape[1]
-    else:
-        state_dim = env.observation_space.shape[1]
-    action_dim = env.action_space.shape[1]
+    state_dim, action_dim = env_dims(env)
 
-    # initialize PPO agent
     agent = PPOAgent(state_dim, action_dim, cfg, device=device)
     agent.actor.eval()
 
-    # reset environment
+    # accepts either a bare actor state_dict or a full checkpoint bundle.
+    checkpoint = torch.load(args_cli.checkpoint, map_location=device)
+    if isinstance(checkpoint, dict) and "actor" in checkpoint:
+        checkpoint = checkpoint["actor"]
+    agent.actor.load_state_dict(strip_compile_prefix(checkpoint))
+    print(f"Loaded checkpoint: {args_cli.checkpoint}")
+
     state, info = env.reset()
-    num_envs = env.unwrapped.num_envs
+    print(f"Playing {args_cli.eval_steps} steps with {env.unwrapped.num_envs} envs.\n")
 
-    print(f"Evaluating with {num_envs} environments.")
-
-    # logging and checkpointing
-    # log_path = f"ryan_logs/{args_cli.task}/"
-    # checkpoint_path = log_path + "actor_best.pth"
-    checkpoint_path = args_cli.checkpoint
-    if os.path.exists(checkpoint_path):
-        print(f"\nFound existing checkpoint: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        if isinstance(checkpoint, dict) and "actor" in checkpoint:
-            checkpoint = checkpoint["actor"]
-        agent.actor.load_state_dict(checkpoint)
-        print("Loaded checkpoint.")
-
-    print("\nStarting evaluation...\n")
-
-    for step in range(args_cli.eval_steps):
+    for _ in range(args_cli.eval_steps):
         # handle both Dict and Box observation spaces
         state_obs = policy_obs(state)
 
-        # deterministic (mean) action from the policy
+        # deterministic action: the policy mean, with no exploration noise.
         with torch.no_grad():
-            mu, _ = agent.actor(state_obs)
+            mu = agent.act_deterministic(state_obs)
 
-        # step the environment with the deterministic action
-        state, _, _, _, _ = env.step(mu)
+        state, reward, terminated, truncated, info = env.step(mu)
 
+    # closing flushes the final video file.
     env.close()
     simulation_app.close()
 
@@ -125,12 +101,12 @@ def play(args_cli):
 if __name__ == "__main__":
     # add argparse arguments
     parser = argparse.ArgumentParser(
-        description="PPO agent evaluation for IsaacLab environments."
+        description="Deterministic playback of a trained policy for Isaac Lab tasks."
     )
     parser.add_argument(
         "--checkpoint",
         type=str,
-        default=None,
+        required=True,
         help="checkpoint file for actor network.",
     )
     parser.add_argument(
@@ -141,10 +117,16 @@ if __name__ == "__main__":
         "--seed", type=int, default=42, help="Random seed for reproducibility."
     )
     parser.add_argument(
+        "--eval_steps",
+        type=int,
+        default=2000,
+        help="Number of steps to run the policy for.",
+    )
+    parser.add_argument(
         "--video",
         action="store_true",
         default=False,
-        help="Record video of the test run.",
+        help="Record video of the run.",
     )
     parser.add_argument(
         "--video_length",
@@ -158,12 +140,7 @@ if __name__ == "__main__":
         default=2000,
         help="Interval between videos (in steps).",
     )
-    parser.add_argument(
-        "--eval_steps",
-        type=int,
-        default=2000,
-        help="Number of steps to run the policy for.",
-    )
+
     # append AppLauncher cli args
     AppLauncher.add_app_launcher_args(parser)
 

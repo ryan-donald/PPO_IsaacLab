@@ -1,6 +1,27 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
+
+
+@dataclass
+class RolloutBatch:
+    """
+    single dataclass to store all the rollout buffers for the ppo update.
+    """
+
+    states: torch.Tensor  # (N, state_dim)
+    actions: torch.Tensor  # (N, action_dim)
+    log_probs_old: torch.Tensor  # (N,)
+    returns: torch.Tensor  # (N,)
+    advantages: torch.Tensor  # (N,) -- raw; update() normalizes over the batch
+    values_old: torch.Tensor  # (N,)
+    mus_old: torch.Tensor  # (N, action_dim)
+    std_old: torch.Tensor  # (action_dim,) -- policy-level, not per-sample
+
+    def __len__(self) -> int:
+        return self.states.shape[0]
 
 
 class RolloutStorage:
@@ -54,3 +75,26 @@ class RolloutStorage:
         self.truncs[step] = trunc
         self.term_rewards[step] = term_reward
         self.mus[step] = mu
+
+    def flatten(
+        self,
+        *,
+        returns: torch.Tensor,
+        advantages: torch.Tensor,
+        values_old: torch.Tensor,
+        std_old: torch.Tensor,
+    ) -> RolloutBatch:
+        """
+        helper function to flatten the entire batch together, reducing repetition
+        in the train.py file.
+        """
+        return RolloutBatch(
+            states=self.states.reshape(-1, self.states.shape[-1]),
+            actions=self.actions.reshape(-1, self.actions.shape[-1]),
+            log_probs_old=self.log_probs.reshape(-1),
+            returns=returns.reshape(-1),
+            advantages=advantages.reshape(-1),
+            values_old=values_old.reshape(-1),
+            mus_old=self.mus.reshape(-1, self.mus.shape[-1]),
+            std_old=std_old,
+        )

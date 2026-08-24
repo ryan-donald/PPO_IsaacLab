@@ -9,11 +9,10 @@ import torch.optim as optim
 from ryan_ppo.config import TrainConfig
 from ryan_ppo.network import Actor, Critic
 from ryan_ppo.normalization import ObsNormalization
+from ryan_ppo.storage import RolloutBatch
 
-KL_ABORT_FACTOR = 4.0
 KL_LR_DECREASE_FACTOR = 2.0
 KL_LR_INCREASE_FACTOR = 2.0
-KL_EPOCH_STOP_FACTOR = 1.5
 LR_ADJUST_RATIO = 1.5
 
 LOG_SQRT_2PI = 0.5 * math.log(2 * math.pi)
@@ -25,8 +24,20 @@ if COMPILE_MODE == "default":
 
 
 def strip_compile_prefix(state_dict: dict) -> dict:
-    # allows loading of compiled models into non-compiled models
+    # allows loading of checkpoints saved from a compiled module.
     return {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+
+
+def gaussian_log_prob(
+    x: torch.Tensor, mu: torch.Tensor, std: torch.Tensor, log_std: torch.Tensor
+) -> torch.Tensor:
+    # diagonal gaussian log-density, summed over action dims.
+    return (-0.5 * ((x - mu) / std).square() - log_std - LOG_SQRT_2PI).sum(dim=-1)
+
+
+def gaussian_entropy(log_std: torch.Tensor) -> torch.Tensor:
+    # closed-form diagonal gaussian entropy, summed over action dims.
+    return (log_std + 0.5 + LOG_SQRT_2PI).sum()
 
 
 class PPOAgent:
@@ -69,13 +80,6 @@ class PPOAgent:
             foreach=False if device.type != "cuda" else None,
         )
 
-        # allows saving of non-compiled weights.
-        self.actor_module = self.actor
-        self.critic_module = self.critic
-
-        self.actor = torch.compile(self.actor)
-        self.critic = torch.compile(self.critic)
-
         # hyperparameters
         self.gamma = cfg.gamma
         self.gae_lambda = cfg.gae_lambda
@@ -87,7 +91,6 @@ class PPOAgent:
         self.schedule_type = cfg.schedule_type
         self.max_lr = cfg.max_lr
         self.min_lr = cfg.min_lr
-        self.kl_early_stop = cfg.kl_early_stop
 
         self.update_count = 0
 
@@ -114,6 +117,10 @@ class PPOAgent:
         )
         self.lr_t.copy_(adjusted.clamp_(self.min_lr, self.max_lr))
 
+    @torch.compile
+    def update_normalization(self, obs: torch.Tensor) -> None:
+        self.actor.update_normalization(obs)
+
     def save_checkpoint(self, path: str, iteration: int) -> None:
         # save a complete checkpoint for resuming training. includes weights,
         # optimizer, lr, and number of updates. allows for seamless saving of
@@ -123,8 +130,8 @@ class PPOAgent:
         torch.save(
             {
                 "iteration": iteration,
-                "actor": self.actor_module.state_dict(),
-                "critic": self.critic_module.state_dict(),
+                "actor": self.actor.state_dict(),
+                "critic": self.critic.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
                 "current_lr": self.current_lr,
                 "update_count": self.update_count,
@@ -136,9 +143,9 @@ class PPOAgent:
         # fully loads the checkpoint saved by the save_checkpoint() function.
 
         checkpoint = torch.load(path, map_location=self.device)
-        self.actor_module.load_state_dict(strip_compile_prefix(checkpoint["actor"]))
+        self.actor.load_state_dict(strip_compile_prefix(checkpoint["actor"]))
         self.actor.log_std.data.clamp_(min=self.log_std_min, max=self.log_std_max)
-        self.critic_module.load_state_dict(strip_compile_prefix(checkpoint["critic"]))
+        self.critic.load_state_dict(strip_compile_prefix(checkpoint["critic"]))
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.current_lr = checkpoint["current_lr"]
         self.update_count = checkpoint.get("update_count", 0)
@@ -162,19 +169,25 @@ class PPOAgent:
         self, state_obs: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # performs forward pass, gaussian sample, and log_prob in one compiled function
-        mu, std = self.actor_module(state_obs)
+        mu, std, log_std = self.actor(state_obs)
         action = torch.addcmul(mu, std, torch.randn_like(mu))
-        log_prob = (
-            -0.5 * ((action - mu) / std).square()
-            - self.actor_module.log_std
-            - LOG_SQRT_2PI
-        ).sum(dim=-1)
+        log_prob = gaussian_log_prob(action, mu, std, log_std)
         return action, log_prob, mu, std
 
+    @torch.compile
+    def act_deterministic(self, state_obs: torch.Tensor) -> torch.Tensor:
+        # the policy mean, for evaluation/play.
+        mu, _, _ = self.actor(state_obs)
+        return mu
+
+    @torch.compile
+    def evaluate_values(self, states: torch.Tensor) -> torch.Tensor:
+        # critic values with the trailing singleton dim dropped.
+        return self.critic(states).squeeze(-1)
+
     def entropy(self) -> float:
-        # closed-form Gaussian entropy, summed over action dims.
         with torch.no_grad():
-            return (self.actor.log_std + 0.5 + LOG_SQRT_2PI).sum().item()
+            return gaussian_entropy(self.actor.log_std).item()
 
     @torch.compile
     def compute_gae(
@@ -221,14 +234,10 @@ class PPOAgent:
         # single minibatch loss and kl in a single compiled function.
 
         # calculate log_probs for current policy.
-        mu, std = self.actor_module(batch_states)
+        mu, std, log_std = self.actor(batch_states)
 
-        log_probs = (
-            -0.5 * ((batch_actions - mu) / std).square()
-            - self.actor_module.log_std
-            - LOG_SQRT_2PI
-        ).sum(dim=-1)
-        entropy = (self.actor_module.log_std + 0.5 + LOG_SQRT_2PI).sum()
+        log_probs = gaussian_log_prob(batch_actions, mu, std, log_std)
+        entropy = gaussian_entropy(log_std)
 
         # full KL divergence.
         mu_d = mu.detach()
@@ -251,7 +260,7 @@ class PPOAgent:
         actor_loss = -torch.min(surr1, surr2).mean()
 
         # compute clipped value loss
-        values = self.critic_module(batch_states).view(-1)
+        values = self.critic(batch_states).view(-1)
         value_pred_clipped = batch_values_old + torch.clamp(
             values - batch_values_old, -self.clip_epsilon, self.clip_epsilon
         )
@@ -266,49 +275,29 @@ class PPOAgent:
 
     def update(
         self,
-        states: torch.Tensor,
-        actions: torch.Tensor,
-        log_probs_old: torch.Tensor,
-        returns: torch.Tensor,
-        advantages: torch.Tensor,
-        values_old: torch.Tensor,
-        mus_old: torch.Tensor,
-        std_old: torch.Tensor,
+        batch: RolloutBatch,
         epochs: int = 4,
         num_mini_batches: int = 4,
-    ) -> tuple[float, float]:
+    ) -> float:
         # updates Actor and Critic networks using the PPO algorithm.
 
-        # batch data
-        b_states = states.reshape(-1, states.shape[-1])
-        b_actions = actions.reshape(-1, actions.shape[-1])
-        b_log_probs_old = log_probs_old.reshape(-1)
-        b_returns = returns.reshape(-1)
-        b_advantages = advantages.reshape(-1)
-        b_values_old = values_old.reshape(-1)
-        b_mus_old = mus_old.reshape(-1, mus_old.shape[-1])
-
         # normalize advantages once over the full batch
-        b_advantages = (b_advantages - b_advantages.mean()) / (
-            b_advantages.std() + 1e-8
+        advantages = (batch.advantages - batch.advantages.mean()) / (
+            batch.advantages.std() + 1e-8
         )
 
-        dataset_size = b_states.shape[0]
+        dataset_size = len(batch)
         batch_size = dataset_size // num_mini_batches
 
-        # accumulates KL when not using early stopping to prevent GPU to CPU syncs.
+        # KL accumulates on device and the adaptive schedule runs on device, so the
+        # whole update needs no GPU to CPU sync until the mean is read out below.
         kl_sum = torch.zeros((), device=self.device)
-        mean_kl = 0.0
         num_updates = 0
-        kl_abort = False
 
         # training loop
-        for epoch in range(epochs):
+        for _ in range(epochs):
             # randomizes batch data
             indices = torch.randperm(dataset_size, device=self.device)
-
-            epoch_kl = 0
-            epoch_updates = 0
 
             # mini-batch updates
             for start in range(0, dataset_size, batch_size):
@@ -316,42 +305,27 @@ class PPOAgent:
                 batch_indices = indices[start:end]
 
                 loss, kl = self.minibatch_loss(
-                    b_states[batch_indices],
-                    b_actions[batch_indices],
-                    b_log_probs_old[batch_indices],
-                    b_returns[batch_indices],
-                    b_advantages[batch_indices],
-                    b_values_old[batch_indices],
-                    b_mus_old[batch_indices],
-                    std_old,
+                    batch.states[batch_indices],
+                    batch.actions[batch_indices],
+                    batch.log_probs_old[batch_indices],
+                    batch.returns[batch_indices],
+                    advantages[batch_indices],
+                    batch.values_old[batch_indices],
+                    batch.mus_old[batch_indices],
+                    batch.std_old,
                 )
 
                 # gradient descent step, with a clipped gradient norm. called here
-                # to queue calculation on gpu while kl calculation is performed
-                # and moved gpu-cpu.
+                # to queue calculation on gpu while the kl accumulation below is
+                # enqueued.
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
 
-                epoch_updates += 1
+                kl = kl.detach()
+                kl_sum += kl
                 num_updates += 1
-
-                if self.kl_early_stop:
-                    batch_kl = kl.item()
-                    if math.isnan(batch_kl):
-                        raise RuntimeError(
-                            f"KL is NaN at update {self.update_count}, epoch {epoch}"
-                        )
-                    epoch_kl += batch_kl
-
-                    # kl early stopping per minibatch
-                    if batch_kl > self.desired_kl * KL_ABORT_FACTOR:
-                        kl_abort = True
-                        break
-                else:
-                    # no kl early stopping.
-                    kl_sum += kl.detach()
-                    if self.schedule_type == "adaptive":
-                        self.adapt_lr_device(kl.detach())
+                if self.schedule_type == "adaptive":
+                    self.adapt_lr_device(kl)
 
                 # clip actor and critic norms seperately, as they can interfere.
                 torch.nn.utils.clip_grad_norm_(self.actor_params, self.max_grad_norm)
@@ -362,35 +336,12 @@ class PPOAgent:
                 self.actor.log_std.data.clamp_(
                     min=self.log_std_min, max=self.log_std_max
                 )
-            mean_kl += epoch_kl
 
-            if self.kl_early_stop:
-                mean_epoch_kl = epoch_kl / epoch_updates
-                if kl_abort or mean_epoch_kl > self.desired_kl * KL_EPOCH_STOP_FACTOR:
-                    break
-
-        # average KL divergence over all updates. different depending on how kl is
-        # stored based on kl early stopping enabled or not.
-        if self.kl_early_stop:
-            mean_kl = mean_kl / num_updates if num_updates > 0 else 0
-        else:
-            mean_kl = (kl_sum / num_updates).item() if num_updates > 0 else 0.0
-            if math.isnan(mean_kl):
-                raise RuntimeError(f"KL is NaN at update {self.update_count}")
-
-        # with kl early stopping, only update learning rate once per iteration, not per
-        # minibatch.
-        if self.schedule_type == "adaptive" and self.kl_early_stop:
-            if mean_kl > self.desired_kl * KL_LR_DECREASE_FACTOR:
-                self.current_lr = max(self.min_lr, self.current_lr / LR_ADJUST_RATIO)
-            elif 0.0 < mean_kl < self.desired_kl / KL_LR_INCREASE_FACTOR:
-                self.current_lr = min(self.max_lr, self.current_lr * LR_ADJUST_RATIO)
+        # average KL divergence over all minibatch updates.
+        mean_kl = (kl_sum / num_updates).item()
+        if math.isnan(mean_kl):
+            raise RuntimeError(f"KL is NaN at update {self.update_count}")
 
         self.update_count += 1
 
-        # tracking how many actual epochs ran this update. i.e., how many before kl
-        # stopping.
-        updates_per_epoch = math.ceil(dataset_size / batch_size)
-        epochs_run = num_updates / updates_per_epoch
-
-        return mean_kl, epochs_run
+        return mean_kl

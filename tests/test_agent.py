@@ -2,6 +2,7 @@ import torch
 
 from ryan_ppo.config import TrainConfig
 from ryan_ppo.ppo import PPOAgent
+from ryan_ppo.storage import RolloutBatch
 
 
 def make_agent(state_dim, action_dim, hidden_dims):
@@ -38,8 +39,8 @@ def test_agent_init():
 
     random_input = torch.randn(batch_size, state_dim)
 
-    critic_output = agent.critic.forward(random_input)
-    mu, std = agent.actor.forward(random_input)
+    critic_output = agent.critic(random_input)
+    mu, std, _ = agent.actor(random_input)
 
     assert critic_output.shape == (batch_size, 1), (
         "Critic output should be (batch_size, 1)"
@@ -157,21 +158,19 @@ def test_update():
     actor_old_params = [p.clone() for p in agent.actor.parameters()]
     critic_old_params = [p.clone() for p in agent.critic.parameters()]
 
-    kl, epochs_run = agent.update(
-        random_states,
-        actions,
-        log_probs_old,
-        random_returns,
-        random_advantages,
-        random_values_old,
-        mus_old,
-        stds_old,
-        epochs,
-        num_mini_batches=1,
+    batch = RolloutBatch(
+        states=random_states,
+        actions=actions,
+        log_probs_old=log_probs_old,
+        returns=random_returns,
+        advantages=random_advantages,
+        values_old=random_values_old,
+        mus_old=mus_old,
+        std_old=stds_old,
     )
+    kl = agent.update(batch, epochs, num_mini_batches=1)
 
     assert type(kl) is float
-    assert 0.0 < epochs_run <= epochs
 
     actor_new_params = [p.clone() for p in agent.actor.parameters()]
     critic_new_params = [p.clone() for p in agent.critic.parameters()]
@@ -199,7 +198,7 @@ def test_checkpoint_roundtrip(tmp_path):
     other = make_agent(4, 4, [2, 2])
     assert other.load_checkpoint(path) == 7
 
-    for key, value in agent.actor_module.state_dict().items():
-        assert torch.equal(value, other.actor_module.state_dict()[key])
-    for key, value in agent.critic_module.state_dict().items():
-        assert torch.equal(value, other.critic_module.state_dict()[key])
+    for key, value in agent.actor.state_dict().items():
+        assert torch.equal(value, other.actor.state_dict()[key])
+    for key, value in agent.critic.state_dict().items():
+        assert torch.equal(value, other.critic.state_dict()[key])

@@ -14,79 +14,50 @@ def train(args_cli):
     app_launcher = AppLauncher(args_cli, **app_kwargs)
     simulation_app = app_launcher.app
 
-    if args_cli.profile:
-        import carb.profiler
-
-        carb.profiler.begin(1, "train_loop")
-
-    import os
-    import pathlib
-    import random
     import signal
     import time
-    from contextlib import contextmanager
     from datetime import datetime
 
     import gymnasium as gym
     import isaaclab_tasks  # noqa: F401
-    import numpy as np
-    import rich.traceback
     import torch
     import wandb
     from isaaclab_tasks.utils import parse_env_cfg
-    from rich.live import Live
 
     import ryan_tasks  # noqa: F401
+    from ryan_ppo.checkpointing import CheckpointSaver
     from ryan_ppo.config import TrainConfig
     from ryan_ppo.ppo import PPOAgent
     from ryan_ppo.storage import RolloutStorage
-    from ryan_ppo.tracking import EpisodeTracker
-    from ryan_ppo.utils import generate_table, get_cfg_path, policy_obs
-
-    isaaclab_src = pathlib.Path(sys.modules["isaaclab"].__file__).parents[2]
-    rich.traceback.install(
-        # show_locals=True,
-        suppress=[str(isaaclab_src), gym]
+    from ryan_ppo.tracking import EpisodeTracker, TrainingLogger
+    from ryan_ppo.utils import (
+        Profiler,
+        env_dims,
+        get_cfg_path,
+        get_device,
+        install_rich_traceback,
+        policy_obs,
+        set_seed,
     )
-    rich_excepthook = sys.excepthook
 
-    # set device before using it in class instantiation
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    profiler = Profiler(args_cli.profile)
+    profiler.begin(1, "train_loop")
 
+    # the suppressed-library list lives in utils.install_rich_traceback.
+    rich_excepthook = install_rich_traceback()
+
+    device = get_device()
     torch.set_float32_matmul_precision("high")
 
-    @contextmanager
-    def profile_zone(zone_id, name):
-        # wraps a block in a carb.profiler zone; no-op when profiling is off.
-        if args_cli.profile:
-            carb.profiler.begin(zone_id, name)
-        try:
-            yield
-        finally:
-            if args_cli.profile:
-                carb.profiler.end(zone_id)
-
-    # set seeds for reproducibility
-    seed = args_cli.seed
-    print(f"Setting seed: {seed}")
-
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    set_seed(args_cli.seed)
 
     env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs
     )
-
-    env_cfg.seed = seed
+    env_cfg.seed = args_cli.seed
 
     # create environment
     env = gym.make(args_cli.task, cfg=env_cfg)
-    env.reset()
 
     # get environment-specific training configuration
     cfg = TrainConfig.from_ini(get_cfg_path(args_cli.task))
@@ -101,19 +72,14 @@ def train(args_cli):
         settings={"console": "off"},
     )
 
-    # need to reset to excepthook from rich. if not, wandb will print base traceback,
-    # then rich will print traceback.
+    # wandb.init() replaces sys.excepthook; put rich's back or a failure prints
+    # the plain traceback first and the rich one second.
     sys.excepthook = rich_excepthook
 
     if args_cli.sweep:
         cfg.apply_sweep(wandb.config)
 
-    # store state and action dimensions
-    if isinstance(env.observation_space, gym.spaces.Dict):
-        state_dim = env.observation_space["policy"].shape[1]
-    else:
-        state_dim = env.observation_space.shape[1]
-    action_dim = env.action_space.shape[1]
+    state_dim, action_dim = env_dims(env)
 
     # initialize PPO agent
     agent = PPOAgent(state_dim, action_dim, cfg, device=device)
@@ -131,16 +97,10 @@ def train(args_cli):
 
     steps_per_rollout = cfg.num_steps_per_env * num_envs  # 24 * num_envs
     num_steps = cfg.num_steps_per_env
-    curr_max = -float("inf")
 
-    # logging and checkpointing
-    log_path = f"ppo_logs/{args_cli.task}/{run_id}/"
-    os.makedirs(log_path, exist_ok=True)
-
-    # iterations at which to save full resumable checkpoint bundles
-    checkpoint_iters = {
-        int(it) for it in args_cli.checkpoint_iters.split(",") if it.strip()
-    }
+    saver = CheckpointSaver(
+        f"ppo_logs/{args_cli.task}/{run_id}/", args_cli.checkpoint_iters
+    )
 
     # resume from a checkpoint. fully resumes the training, with actor, critic,
     # optimizer, lr, and step count for correct curriculum firing.
@@ -159,47 +119,19 @@ def train(args_cli):
     # when a rollout has zero completed episodes.
     tracker = EpisodeTracker(num_envs, term_names, device)
 
-    perf_stats = {
-        "steps": 0,
-        "steps/s": 0.0,
-        "Rollout Time": 0.0,
-        "Update Time": 0.0,
-        "episodes": 0.0,
-        "Runtime": 0.0,
-        "Remaining Time": 0.0,
-    }
-
-    train_stats = {
-        "lr": 0.0,
-        "kl": 0.0,
-        "entropy": 0.0,
-        "Epochs": f"0/{cfg.num_learning_epochs}",
-        "Iteration": 0,
-    }
-
-    run_url = run.url
-
-    live = Live(
-        generate_table(
-            perf_stats,
-            train_stats,
-            {name: 0.0 for name in term_names},
-            args_cli.task,
-            run_url,
-        ),
-        refresh_per_second=4,
+    # owns the wandb stream and the live terminal table.
+    logger = TrainingLogger(
+        args_cli.task, run.url, term_names, cfg.max_iterations, steps_per_rollout
     )
-    live.start()
+    logger.start()
 
     # with ctrl+c closing the script, the terminal breaks without this.
     def _on_sigint(signum, frame):
-        live.stop()
+        logger.stop()
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, _on_sigint)
-
-    start_time = time.perf_counter()
 
     # rollout buffers for one PPO iteration.
     storage = RolloutStorage(
@@ -213,11 +145,11 @@ def train(args_cli):
             state_obs = policy_obs(state)
 
             # select action from policy
-            with profile_zone(2, "select_action"), torch.no_grad():
+            with profiler.zone(2, "select_action"), torch.no_grad():
                 action, log_prob, mu, std = agent.select_action(state_obs)
 
             # take step in environment
-            with profile_zone(3, "env_step"):
+            with profiler.zone(3, "env_step"):
                 next_state, reward, terminated, truncated, info = env.step(action)
 
             # store steps where envs finished, either terminated or truncated
@@ -241,14 +173,14 @@ def train(args_cli):
 
         # update normalization statistics in one call per rollout.
         if cfg.use_normalization:
-            agent.actor.update_normalization(storage.states.view(-1, state_dim))
+            agent.update_normalization(storage.states.view(-1, state_dim))
 
         rollout_time = time.perf_counter() - rollout_start
 
         # critic values for the whole rollout in one batched forward pass.
         with torch.no_grad():
-            values = agent.critic(storage.states).squeeze(-1)
-            next_value = agent.critic(policy_obs(state)).squeeze(-1)
+            values = agent.evaluate_values(storage.states)
+            next_value = agent.evaluate_values(policy_obs(state))
 
         # accumulate episode/term rewards
         for step in range(num_steps):
@@ -260,123 +192,47 @@ def train(args_cli):
         storage.rewards += agent.gamma * values * storage.truncs
 
         # compute GAE advantages and returns
-        with profile_zone(4, "compute_gae"):
+        with profiler.zone(4, "compute_gae"):
             advantages, returns = agent.compute_gae(
                 storage.rewards, values, storage.dones, next_value
             )
 
         # update actor and critic networks
         update_start = time.perf_counter()
-        with profile_zone(5, "update"):
-            mean_kl, update_epochs = agent.update(
-                storage.states,
-                storage.actions,
-                storage.log_probs,
-                returns,
-                advantages,
-                values,
-                storage.mus,
-                std,
+        with profiler.zone(5, "update"):
+            batch = storage.flatten(
+                returns=returns,
+                advantages=advantages,
+                values_old=values,
+                std_old=std,
+            )
+            mean_kl = agent.update(
+                batch,
                 epochs=cfg.num_learning_epochs,
                 num_mini_batches=cfg.num_mini_batches,
             )
         update_time = time.perf_counter() - update_start
 
-        with profile_zone(6, "logging/cli"):
+        with profiler.zone(6, "logging/cli"):
             # reduce rollout into episode statistics (reward stats forward-filled
             # if no episodes completed this rollout; num_episodes is zero then).
             stats = tracker.summarize(agent.entropy())
 
-            logging_dict = {
-                "train/avg_reward": stats.avg_reward,
-                "train/min_reward": stats.min_reward,
-                "train/max_reward": stats.max_reward,
-                "train/std_reward": stats.std_reward,
-                "train/kl": mean_kl,
-                "train/lr": agent.current_lr,
-                "train/episodes": stats.num_episodes,
-                "train/avg_entropy": stats.avg_entropy,
-                "train/update_epochs": update_epochs,
-                "perf/rollout_time": rollout_time,
-                "perf/update_time": update_time,
-            }
-
-            for t_name in term_names:
-                logging_dict[f"rewards/{t_name}"] = stats.term_rewards[t_name]
-
-            wandb.log(logging_dict, step=update)
-
-            # aggregate rows for the TUI (added after wandb.log so they aren't
-            # logged).
-            stats.term_rewards["Mean Reward"] = stats.avg_reward
-            stats.term_rewards["Max Reward"] = stats.max_reward
-
-            perf_stats["steps"] += steps_per_rollout
-            perf_stats["Runtime"] = time.perf_counter() - start_time
-            perf_stats["steps/s"] = perf_stats["steps"] / perf_stats["Runtime"]
-            perf_stats["Rollout Time"] = rollout_time
-            perf_stats["Update Time"] = update_time
-            perf_stats["episodes"] += stats.num_episodes
-            perf_stats["Remaining Time"] = (
-                (cfg.max_iterations - (update + 1))
-                * steps_per_rollout
-                / perf_stats["steps/s"]
+            logger.log_iteration(
+                update, stats, mean_kl, agent.current_lr, rollout_time, update_time
             )
 
-            train_stats["lr"] = agent.current_lr
-            train_stats["kl"] = mean_kl
-            train_stats["entropy"] = stats.avg_entropy
-            train_stats["Epochs"] = f"{update_epochs:g}/{cfg.num_learning_epochs}"
-            train_stats["Iteration"] = update + 1
-
-            live.update(
-                generate_table(
-                    perf_stats, train_stats, stats.term_rewards, args_cli.task, run_url
-                )
-            )
-
-        # save best model when reward improves
         if args_cli.save:
-            iteration = update + 1
+            saver.save_iteration(agent, update + 1, stats.avg_reward)
 
-            if stats.avg_reward > curr_max:
-                curr_max = stats.avg_reward
-                torch.save(agent.actor_module.state_dict(), log_path + "actor_best.pth")
-                torch.save(
-                    agent.critic_module.state_dict(), log_path + "critic_best.pth"
-                )
-
-            # periodic weight snapshots and a rolling resumable checkpoint
-            if iteration % 100 == 0:
-                torch.save(
-                    agent.actor_module.state_dict(),
-                    log_path + f"actor_iter_{iteration}.pth",
-                )
-                torch.save(
-                    agent.critic_module.state_dict(),
-                    log_path + f"critic_iter_{iteration}.pth",
-                )
-                agent.save_checkpoint(log_path + "checkpoint_latest.pth", iteration)
-
-            # full checkpoint bundles at requested iterations, for resuming or
-            # fine-tuning later
-            if iteration in checkpoint_iters:
-                agent.save_checkpoint(
-                    log_path + f"checkpoint_{iteration}.pth", iteration
-                )
-
-    live.stop()
+    logger.stop()
     env.close()
     wandb.finish()
 
-    # save final model
     if args_cli.save:
-        torch.save(agent.actor_module.state_dict(), log_path + "actor_final.pth")
-        torch.save(agent.critic_module.state_dict(), log_path + "critic_final.pth")
-        agent.save_checkpoint(log_path + "checkpoint_final.pth", cfg.max_iterations)
+        saver.save_final(agent, cfg.max_iterations)
 
-    if args_cli.profile:
-        carb.profiler.end(1)
+    profiler.end(1)
 
     simulation_app.close()
 
