@@ -1,3 +1,7 @@
+import math
+from dataclasses import replace
+
+import pytest
 import torch
 
 from ryan_ppo.config import TrainConfig
@@ -5,7 +9,7 @@ from ryan_ppo.ppo import PPOAgent
 from ryan_ppo.storage import RolloutBatch
 
 
-def make_agent(state_dim, action_dim, hidden_dims):
+def make_agent(state_dim, action_dim, hidden_dims, **overrides):
     # builds an agent with the defaults the constructor used before TrainConfig
     # was folded in, so test behavior is unchanged.
     cfg = TrainConfig(
@@ -25,7 +29,7 @@ def make_agent(state_dim, action_dim, hidden_dims):
         use_normalization=True,
         hidden_dims=hidden_dims,
     )
-    return PPOAgent(state_dim, action_dim, cfg)
+    return PPOAgent(state_dim, action_dim, replace(cfg, **overrides))
 
 
 def test_agent_init():
@@ -202,3 +206,126 @@ def test_checkpoint_roundtrip(tmp_path):
         assert torch.equal(value, other.actor.state_dict()[key])
     for key, value in agent.critic.state_dict().items():
         assert torch.equal(value, other.critic.state_dict()[key])
+
+
+def test_checkpoint_restores_adaptive_optimizer_step(tmp_path):
+    agent = make_agent(4, 2, [2, 2])
+    # Populate Adam's moments before saving, then compare actual resumed steps.
+    params = agent.actor_params + agent.critic_params
+    for p in params:
+        p.grad = torch.ones_like(p)
+    agent.optimizer.step()
+    path = str(tmp_path / "checkpoint.pth")
+    agent.save_checkpoint(path, 1)
+    resumed = make_agent(4, 2, [2, 2])
+    resumed.load_checkpoint(path)
+    for current in (agent, resumed):
+        current.adapt_lr_device(torch.tensor(0.1))
+        assert current.current_lr == pytest.approx(1e-3 / 1.5)
+        assert current.optimizer.param_groups[0]["lr"] is current.lr_t
+        for p in current.actor_params + current.critic_params:
+            p.grad = torch.full_like(p, 0.25)
+        current.optimizer.step()
+    for expected, actual in zip(params, resumed.actor_params + resumed.critic_params):
+        torch.testing.assert_close(actual, expected)
+
+
+def make_rollout(agent, states):
+    actions, log_probs, mus, std = agent.select_action(states)
+    with torch.no_grad():
+        values = agent.evaluate_values(states)
+    return RolloutBatch(
+        states=states,
+        actions=actions,
+        log_probs_old=log_probs,
+        returns=values + 1,
+        advantages=torch.arange(len(states)).float(),
+        values_old=values,
+        mus_old=mus,
+        std_old=std,
+    )
+
+
+def test_normalization_is_frozen_until_update_finishes(monkeypatch):
+    torch.manual_seed(7)
+    agent = make_agent(4, 2, [2, 2])
+    agent.update_normalization(torch.randn(8, 4))
+    norm = agent.obs_normalizer
+    before = {name: value.clone() for name, value in norm.state_dict().items()}
+    batch = make_rollout(agent, torch.randn(8, 4) * 2 + 20)
+    original_loss = agent.minibatch_loss
+    kls = []
+
+    def checked_loss(*args):
+        for name, value in norm.state_dict().items():
+            torch.testing.assert_close(value, before[name])
+        result = original_loss(*args)
+        kls.append(result[1].item())
+        return result
+
+    monkeypatch.setattr(agent, "minibatch_loss", checked_loss)
+    agent.update(batch, epochs=2, num_mini_batches=2)
+    assert len(kls) == 4
+    assert kls[0] == pytest.approx(0, abs=1e-6)
+    for name, value in norm.state_dict().items():
+        torch.testing.assert_close(value, before[name])
+    # The trainer explicitly advances statistics after the PPO update.
+    agent.update_normalization(batch.states)
+    torch.testing.assert_close(norm.count, before["count"] + len(batch))
+    assert not torch.equal(norm.mean, before["mean"])
+
+
+@pytest.mark.parametrize("normalize", [False, True])
+def test_minibatch_indexing_matches_preselected_loss_and_gradients(normalize):
+    torch.manual_seed(8)
+    agent = make_agent(4, 2, [2, 2], use_normalization=normalize)
+    agent.update_normalization(torch.randn(8, 4) * 3 + 10)
+    batch = make_rollout(agent, torch.randn(8, 4) * 2 + 8)
+    indices = torch.tensor([5, 1, 7, 0])
+    indexed_loss, indexed_kl = agent.minibatch_loss(
+        batch.states,
+        batch.actions,
+        batch.log_probs_old,
+        batch.returns,
+        batch.advantages,
+        batch.values_old,
+        batch.mus_old,
+        batch.std_old,
+        indices,
+    )
+    raw_loss, raw_kl = agent.minibatch_loss(
+        batch.states[indices],
+        batch.actions[indices],
+        batch.log_probs_old[indices],
+        batch.returns[indices],
+        batch.advantages[indices],
+        batch.values_old[indices],
+        batch.mus_old[indices],
+        batch.std_old,
+        torch.arange(len(indices)),
+    )
+    torch.testing.assert_close(indexed_loss, raw_loss)
+    torch.testing.assert_close(indexed_kl, raw_kl)
+    params = agent.actor_params + agent.critic_params
+    for actual, expected in zip(
+        torch.autograd.grad(indexed_loss, params),
+        torch.autograd.grad(raw_loss, params),
+    ):
+        torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-4)
+
+
+@pytest.mark.parametrize(
+    "std_init,std_min,std_max",
+    [
+        (0.5, 0.005, 0.4),
+        (0.1, 0.2, 1.0),
+        (0.3, 0.005, 1.0),
+    ],
+)
+def test_initial_std_uses_config_value(std_init, std_min, std_max):
+    agent = make_agent(
+        4, 2, [2, 2], std_init=std_init, std_min=std_min, std_max=std_max
+    )
+    torch.testing.assert_close(
+        agent.actor.log_std, torch.full((2,), math.log(std_init))
+    )

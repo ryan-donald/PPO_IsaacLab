@@ -15,7 +15,6 @@ def train(args_cli):
     simulation_app = app_launcher.app
 
     import signal
-    import time
     from datetime import datetime
 
     import gymnasium as gym
@@ -31,6 +30,7 @@ def train(args_cli):
     from ryan_ppo.storage import RolloutStorage
     from ryan_ppo.tracking import EpisodeTracker, TrainingLogger
     from ryan_ppo.utils import (
+        PhaseTimer,
         Profiler,
         env_dims,
         get_cfg_path,
@@ -46,7 +46,6 @@ def train(args_cli):
     # the suppressed-library list lives in utils.install_rich_traceback.
     rich_excepthook = install_rich_traceback()
 
-    device = get_device()
     torch.set_float32_matmul_precision("high")
 
     set_seed(args_cli.seed)
@@ -58,6 +57,7 @@ def train(args_cli):
 
     # create environment
     env = gym.make(args_cli.task, cfg=env_cfg)
+    device = get_device(env.unwrapped.device)
 
     # get environment-specific training configuration
     cfg = TrainConfig.from_ini(get_cfg_path(args_cli.task))
@@ -109,6 +109,9 @@ def train(args_cli):
         start_iter = agent.load_checkpoint(args_cli.resume)
         env.unwrapped.common_step_counter = start_iter * cfg.num_steps_per_env
         print(f"Resumed from {args_cli.resume} at iteration {start_iter}.")
+    elif cfg.use_normalization:
+        # ensure that statistics are valid for first rollout on resume.
+        agent.update_normalization(policy_obs(state))
 
     # per-term reward logging
     reward_manager = env.unwrapped.reward_manager
@@ -137,9 +140,12 @@ def train(args_cli):
     storage = RolloutStorage(
         num_steps, num_envs, state_dim, action_dim, len(term_names), device
     )
+    rollout_timer = PhaseTimer(device)
+    preparation_timer = PhaseTimer(device)
+    update_timer = PhaseTimer(device)
 
     for update in range(start_iter, cfg.max_iterations):
-        rollout_start = time.perf_counter()
+        rollout_timer.start()
         for step in range(num_steps):
             # handle both Dict and Box observation spaces
             state_obs = policy_obs(state)
@@ -171,11 +177,8 @@ def train(args_cli):
             # update state for next step
             state = next_state
 
-        # update normalization statistics in one call per rollout.
-        if cfg.use_normalization:
-            agent.update_normalization(storage.states.view(-1, state_dim))
-
-        rollout_time = time.perf_counter() - rollout_start
+        rollout_timer.stop()
+        preparation_timer.start()
 
         # critic values for the whole rollout in one batched forward pass.
         with torch.no_grad():
@@ -183,10 +186,7 @@ def train(args_cli):
             next_value = agent.evaluate_values(policy_obs(state))
 
         # accumulate episode/term rewards
-        for step in range(num_steps):
-            tracker.record_step(
-                storage.rewards[step], storage.dones[step], storage.term_rewards[step]
-            )
+        tracker.record_rollout(storage.rewards, storage.dones, storage.term_rewards)
 
         # bootstrap the reward for steps where env truncated
         storage.rewards += agent.gamma * values * storage.truncs
@@ -198,7 +198,8 @@ def train(args_cli):
             )
 
         # update actor and critic networks
-        update_start = time.perf_counter()
+        preparation_timer.stop()
+        update_timer.start()
         with profiler.zone(5, "update"):
             batch = storage.flatten(
                 returns=returns,
@@ -211,7 +212,10 @@ def train(args_cli):
                 epochs=cfg.num_learning_epochs,
                 num_mini_batches=cfg.num_mini_batches,
             )
-        update_time = time.perf_counter() - update_start
+        # ensure normalization statistics are fixed for each rollout + update.
+        if cfg.use_normalization:
+            agent.update_normalization(storage.states.view(-1, state_dim))
+        update_timer.stop()
 
         with profiler.zone(6, "logging/cli"):
             # reduce rollout into episode statistics (reward stats forward-filled
@@ -219,11 +223,20 @@ def train(args_cli):
             stats = tracker.summarize(agent.entropy())
 
             logger.log_iteration(
-                update, stats, mean_kl, agent.current_lr, rollout_time, update_time
+                update,
+                stats,
+                mean_kl,
+                agent.current_lr,
+                rollout_timer.seconds(),
+                update_timer.seconds(),
+                preparation_time=preparation_timer.seconds(),
+                warmup=(update == start_iter),
             )
 
         if args_cli.save:
-            saver.save_iteration(agent, update + 1, stats.avg_reward)
+            saver.save_iteration(
+                agent, update + 1, stats.avg_reward, num_episodes=stats.num_episodes
+            )
 
     logger.stop()
     env.close()

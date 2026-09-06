@@ -89,17 +89,32 @@ class EpisodeTracker:
         self.term_sum += (self.current_terms * done.unsqueeze(-1)).sum(0)
 
         inf = float("inf")
-        self.ret_min = torch.minimum(
-            self.ret_min, torch.where(done_bool, self.current_rewards, inf).min()
+        self.ret_min.copy_(
+            torch.minimum(
+                self.ret_min, torch.where(done_bool, self.current_rewards, inf).min()
+            )
         )
-        self.ret_max = torch.maximum(
-            self.ret_max, torch.where(done_bool, self.current_rewards, -inf).max()
+        self.ret_max.copy_(
+            torch.maximum(
+                self.ret_max, torch.where(done_bool, self.current_rewards, -inf).max()
+            )
         )
 
         # zero only the finished envs, so each starts its next episode at 0.
         not_done = 1.0 - done
         self.current_rewards *= not_done
         self.current_terms *= not_done.unsqueeze(-1)
+
+    @torch.compile
+    def record_rollout(
+        self,
+        rewards: torch.Tensor,
+        dones: torch.Tensor,
+        term_rewards: torch.Tensor,
+    ) -> None:
+        """Accumulate a fixed-length rollout in one compiled graph."""
+        for step in range(rewards.shape[0]):
+            self.record_step(rewards[step], dones[step], term_rewards[step])
 
     def summarize(self, avg_entropy: float) -> RolloutStats:
         """
@@ -175,6 +190,7 @@ class TrainingLogger:
             "steps": 0,
             "steps/s": 0.0,
             "Rollout Time": 0.0,
+            "Preparation Time": 0.0,
             "Update Time": 0.0,
             "episodes": 0.0,
             "Runtime": 0.0,
@@ -212,6 +228,9 @@ class TrainingLogger:
         lr: float,
         rollout_time: float,
         update_time: float,
+        *,
+        preparation_time: float = 0.0,
+        warmup: bool = False,
     ) -> None:
         """
         log one iteration to wandb and refresh the terminal table. `iteration`
@@ -228,6 +247,8 @@ class TrainingLogger:
             "train/avg_entropy": stats.avg_entropy,
             "perf/rollout_time": rollout_time,
             "perf/update_time": update_time,
+            "perf/preparation_time": preparation_time,
+            "perf/warmup": warmup,
         }
         for name in self.term_names:
             logging_dict[f"rewards/{name}"] = stats.term_rewards[name]
@@ -244,6 +265,7 @@ class TrainingLogger:
         perf["Runtime"] = time.perf_counter() - self.start_time
         perf["steps/s"] = perf["steps"] / perf["Runtime"]
         perf["Rollout Time"] = rollout_time
+        perf["Preparation Time"] = preparation_time
         perf["Update Time"] = update_time
         perf["episodes"] += stats.num_episodes
         perf["Remaining Time"] = (

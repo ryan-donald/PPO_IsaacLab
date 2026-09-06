@@ -17,6 +17,7 @@ class ObsNormalization(nn.Module):
         self.register_buffer("var", torch.ones(state_dim))
         self.register_buffer("count", torch.tensor(1e-4, dtype=torch.float32))
 
+    @torch.no_grad()
     def update(self, x: torch.Tensor):
         batch_mean = x.mean(dim=0)
         batch_var = x.var(dim=0, unbiased=False)

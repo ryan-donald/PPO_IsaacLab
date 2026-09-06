@@ -103,3 +103,13 @@ def test_from_ini_reads_every_field(tmp_path):
     assert cfg.max_lr == 0.02
     assert cfg.stagger_initial_episodes is False
     assert cfg.min_lr == 1e-5  # untouched optional field keeps its default
+
+
+def test_apply_sweep(tmp_path):
+    path = tmp_path / "task.ini"
+    path.write_text(TASK_INI)
+    cfg = TrainConfig.from_ini(path)
+    cfg.apply_sweep({"lr": 0.001, "num_learning_epochs": 3})
+    assert cfg.learning_rate == 0.001
+    assert cfg.num_learning_epochs == 3
+    assert cfg.gamma == 0.98

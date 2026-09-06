@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import sys
+import time
 from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
@@ -20,20 +21,58 @@ def install_rich_traceback(show_locals: bool = False):
     """
     initialize the rich traceback, including suppressing specified libaries.
     """
-    # every isaaclab package
-    isaaclab_root = Path(sys.modules["isaaclab"].__file__).parents[2]
+    # every isaaclab package, when running against isaaclab at all
+    suppress = []
+    isaaclab = sys.modules.get("isaaclab")
+    if isaaclab is not None:
+        suppress.append(str(Path(isaaclab.__file__).parents[2]))
 
-    suppress = [str(isaaclab_root)]
     suppress += [import_module(name) for name in SUPPRESSED_LIBRARIES]
 
     rich.traceback.install(suppress=suppress, show_locals=show_locals)
     return sys.excepthook
 
 
-def get_device() -> torch.device:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def get_device(device: str | torch.device | None = None) -> torch.device:
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device)
     print(f"Using device: {device}")
     return device
+
+
+class PhaseTimer:
+    """Time a phase on its CUDA stream, or with a CPU clock on CPU.
+
+    Read seconds() after the update's existing synchronization, so recording
+    phase boundaries does not introduce synchronization between phases.
+    """
+
+    def __init__(self, device: torch.device) -> None:
+        self.device = torch.device(device)
+        self.cuda = self.device.type == "cuda"
+        if self.cuda:
+            self.start_event = torch.cuda.Event(enable_timing=True)
+            self.end_event = torch.cuda.Event(enable_timing=True)
+        self._seconds = 0.0
+
+    def start(self) -> None:
+        if self.cuda:
+            self.start_event.record(torch.cuda.current_stream(self.device))
+        else:
+            self._start = time.perf_counter()
+
+    def stop(self) -> None:
+        if self.cuda:
+            self.end_event.record(torch.cuda.current_stream(self.device))
+        else:
+            self._seconds = time.perf_counter() - self._start
+
+    def seconds(self) -> float:
+        if self.cuda:
+            self.end_event.synchronize()
+            return self.start_event.elapsed_time(self.end_event) / 1000.0
+        return self._seconds
 
 
 def set_seed(seed: int) -> None:
@@ -185,7 +224,7 @@ def format_values(name, value):
         else:
             formatted_value = f"{value:.0f}s"
         return formatted_value
-    elif name == "Rollout Time" or name == "Update Time":
+    elif name in ("Rollout Time", "Preparation Time", "Update Time"):
         if value >= 1:
             return f"{value:.2f}s"
         return f"{value * 1000:.0f}ms"

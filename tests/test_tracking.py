@@ -74,3 +74,19 @@ def test_empty_rollout_forward_fills():
     stats = tracker.summarize(avg_entropy=0.0)
     assert stats.num_episodes == 0
     assert stats.avg_reward == pytest.approx(3.0)
+
+
+def test_compiled_rollouts_match_episode_by_episode_statistics():
+    compiled = make_tracker()
+    eager = make_tracker()
+    rewards = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
+    # Multiple completions per env and an episode crossing summarize().
+    dones = torch.tensor([[0.0, 1.0], [1.0, 0.0], [0.0, 1.0], [1.0, 0.0]])
+    terms = rewards.unsqueeze(-1).expand(-1, -1, 2) / 2
+    for _ in range(2):
+        for step in range(4):
+            eager.record_step(rewards[step], dones[step], terms[step])
+        compiled.record_rollout(rewards, dones, terms)
+        assert compiled.summarize(0) == eager.summarize(0)
+        torch.testing.assert_close(compiled.current_rewards, eager.current_rewards)
+        torch.testing.assert_close(compiled.current_terms, eager.current_terms)

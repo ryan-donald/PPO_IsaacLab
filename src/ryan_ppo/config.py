@@ -34,6 +34,7 @@ class TrainConfig:
     min_lr: float = 1e-5
     std_min: float = 0.005
     std_max: float = 1.0
+    std_init: float = 0.5
     stagger_initial_episodes: bool = True
 
     @classmethod

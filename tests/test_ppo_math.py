@@ -6,6 +6,7 @@ keep the fast versions honest: a sign or factor error here does not crash, it
 just quietly trains a worse policy.
 """
 
+import pytest
 import torch
 from torch.distributions import Normal, kl_divergence
 
@@ -99,6 +100,7 @@ def test_minibatch_kl_matches_torch():
         torch.randn(BATCH),
         mu_old,
         std_old,
+        torch.arange(BATCH),
     )
 
     with torch.no_grad():
@@ -131,5 +133,37 @@ def test_minibatch_kl_is_zero_for_identical_policies():
         torch.randn(BATCH),
         mu,
         std,
+        torch.arange(BATCH),
     )
     assert abs(kl.item()) < 1e-6, kl.item()
+
+
+@pytest.mark.parametrize("sigma", [1.0, 0.005, 1e-4, 1e-6])
+@pytest.mark.parametrize("identical", [False, True])
+def test_kl_at_small_standard_deviations(sigma, identical):
+    agent = make_agent()
+    states = torch.zeros(BATCH, 8)
+    with torch.no_grad():
+        agent.actor.log_std.fill_(torch.tensor(sigma).log())
+        mu, std, _ = agent.actor(states)
+    old_mu = mu if identical else mu + sigma * 0.25
+    old_std = std if identical else std * 1.3
+    _, actual = agent.minibatch_loss(
+        states,
+        mu,
+        torch.zeros(BATCH),
+        torch.zeros(BATCH),
+        torch.ones(BATCH),
+        torch.zeros(BATCH),
+        old_mu,
+        old_std,
+        torch.arange(BATCH),
+    )
+    expected = (
+        kl_divergence(
+            Normal(old_mu.double(), old_std.double()), Normal(mu.double(), std.double())
+        )
+        .sum(-1)
+        .mean()
+    )
+    assert actual.item() == pytest.approx(expected.item(), rel=1e-5, abs=1e-6)

@@ -48,7 +48,7 @@ class PPOAgent:
         cfg: TrainConfig,
         device: torch.device = torch.device("cpu"),
     ) -> None:
-
+        device = torch.device(device)
         if cfg.use_normalization:
             self.obs_normalizer = ObsNormalization(state_dim)
         else:
@@ -61,6 +61,7 @@ class PPOAgent:
             action_dim,
             cfg.hidden_dims,
             self.obs_normalizer,
+            std=cfg.std_init,
         ).to(device)
         self.critic = Critic(state_dim, cfg.hidden_dims, self.obs_normalizer).to(device)
 
@@ -103,6 +104,7 @@ class PPOAgent:
     def current_lr(self, value: float) -> None:
         self.lr_t.fill_(float(value))
 
+    @torch.compile
     def adapt_lr_device(self, kl: torch.Tensor) -> None:
         # adaptive kl, but done on GPU fully for speed.
         lr = self.lr_t
@@ -147,6 +149,8 @@ class PPOAgent:
         self.actor.log_std.data.clamp_(min=self.log_std_min, max=self.log_std_max)
         self.critic.load_state_dict(strip_compile_prefix(checkpoint["critic"]))
         self.optimizer.load_state_dict(checkpoint["optimizer"])
+        for group in self.optimizer.param_groups:
+            group["lr"] = self.lr_t
         self.current_lr = checkpoint["current_lr"]
         self.update_count = checkpoint.get("update_count", 0)
         return checkpoint["iteration"]
@@ -230,8 +234,17 @@ class PPOAgent:
         batch_values_old: torch.Tensor,
         batch_mus_old: torch.Tensor,
         std_old: torch.Tensor,
+        indices: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # single minibatch loss and kl in a single compiled function.
+
+        batch_states = batch_states[indices]
+        batch_actions = batch_actions[indices]
+        batch_log_probs_old = batch_log_probs_old[indices]
+        batch_returns = batch_returns[indices]
+        batch_advantages = batch_advantages[indices]
+        batch_values_old = batch_values_old[indices]
+        batch_mus_old = batch_mus_old[indices]
 
         # calculate log_probs for current policy.
         mu, std, log_std = self.actor(batch_states)
@@ -242,12 +255,9 @@ class PPOAgent:
         # full KL divergence.
         mu_d = mu.detach()
         std_d = std.detach()
-        kl = (
-            torch.log(std_d / (std_old + 1e-8))
-            + torch.square(std_old) / (2.0 * torch.square(std_d) + 1e-8)
-            - 0.5
-        ).sum() + (
-            torch.square(batch_mus_old - mu_d) / (2.0 * torch.square(std_d) + 1e-8)
+        log_ratio = std_old.log() - log_std.detach()
+        kl = (0.5 * torch.expm1(2.0 * log_ratio) - log_ratio).sum() + (
+            0.5 * ((batch_mus_old - mu_d) / std_d).square()
         ).sum(dim=-1).mean()
 
         # compute surrogate loss
@@ -305,14 +315,15 @@ class PPOAgent:
                 batch_indices = indices[start:end]
 
                 loss, kl = self.minibatch_loss(
-                    batch.states[batch_indices],
-                    batch.actions[batch_indices],
-                    batch.log_probs_old[batch_indices],
-                    batch.returns[batch_indices],
-                    advantages[batch_indices],
-                    batch.values_old[batch_indices],
-                    batch.mus_old[batch_indices],
+                    batch.states,
+                    batch.actions,
+                    batch.log_probs_old,
+                    batch.returns,
+                    advantages,
+                    batch.values_old,
+                    batch.mus_old,
                     batch.std_old,
+                    batch_indices,
                 )
 
                 # gradient descent step, with a clipped gradient norm. called here
@@ -339,8 +350,8 @@ class PPOAgent:
 
         # average KL divergence over all minibatch updates.
         mean_kl = (kl_sum / num_updates).item()
-        if math.isnan(mean_kl):
-            raise RuntimeError(f"KL is NaN at update {self.update_count}")
+        if not math.isfinite(mean_kl):
+            raise RuntimeError(f"KL is non-finite at update {self.update_count}")
 
         self.update_count += 1
 
