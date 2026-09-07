@@ -88,12 +88,15 @@ def train(args_cli):
     state, info = env.reset()
     num_envs = env.unwrapped.num_envs
 
-    # initializes each env to a random step number in [0, episode_length].
+    # staggers episode starts, in whole rollouts so envs that only end in truncation
+    # don't result in resets every step.
     if cfg.stagger_initial_episodes:
         ep_len_buf = env.unwrapped.episode_length_buf
-        env.unwrapped.episode_length_buf = torch.randint_like(
-            ep_len_buf, high=int(env.unwrapped.max_episode_length)
+        rollouts_per_episode = max(
+            int(env.unwrapped.max_episode_length) // cfg.num_steps_per_env, 1
         )
+        offsets = torch.randint_like(ep_len_buf, high=rollouts_per_episode)
+        env.unwrapped.episode_length_buf = offsets * cfg.num_steps_per_env
 
     steps_per_rollout = cfg.num_steps_per_env * num_envs  # 24 * num_envs
     num_steps = cfg.num_steps_per_env
