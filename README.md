@@ -46,39 +46,39 @@ With the help of the python package [rich](https://github.com/textualize/rich), 
 Based on the recommendation in the official Isaac Lab documentation [here](https://docs.isaacsim.omniverse.nvidia.com/4.5.0/utilities/debugging/profiling_performance.html), I added support for code profiling using the Tracy profiler. This allows for live profiling of the performance of the training script. This will provide information for the time spent in each block of execution provide information that can be used to gauge and improve the efficiency of the training script, and various environments. To use this, simply add these flags to the script: "--profile --enable omni.kit.profiler.tracy".
 
 # Benchmarks
-I benchmarked this implementation against the four RL libraries bundled with Isaac Lab — [rsl_rl](https://github.com/leggedrobotics/rsl_rl), [rl_games](https://github.com/Denys88/rl_games), [skrl](https://github.com/Toni-SM/skrl), and [sb3](https://github.com/DLR-RM/stable-baselines3) — across three tasks of increasing difficulty: `Ryan-Cartpole-v0`, `Ryan-Ant-v0`, and `Ryan-Reach-SO-ARM101-Normalized-v0`. Every run used identical settings on the same GPU (RTX 3070) under Isaac Lab 3.0: 12,288 parallel environments, headless, and each library's agent config hyperparameter-matched to `ryan_ppo`. Each framework was run over **three seeds (42, 43, 44)**; the tables report the seed-averaged best mean episode reward reached during training, since the best checkpoint is the one deployed.
+I benchmarked this implementation against the four RL libraries bundled with Isaac Lab — [rsl_rl](https://github.com/leggedrobotics/rsl_rl), [rl_games](https://github.com/Denys88/rl_games), [skrl](https://github.com/Toni-SM/skrl), and [sb3](https://github.com/DLR-RM/stable-baselines3) — across three tasks of increasing difficulty: `Ryan-Cartpole-v0`, `Ryan-Ant-v0`, and `Ryan-Reach-SO-ARM101-Normalized-v0`. Every run used identical settings on the same GPU (RTX 3070) under Isaac Lab 3.0: 12,288 parallel environments, headless, and each library's agent config hyperparameter-matched to `ryan_ppo`. Each framework was run over **three seeds (42, 43, 44)**; the tables report the median across seeds of the final reward (averaged over the last 10% of the run) and of the best mean episode reward reached during training, since the best checkpoint is the one deployed.
 
 **Cartpole** — 1,000 iterations, 16 steps/env
 
-| Framework | Throughput (steps/s) | Wall-clock (min) | Best reward |
-|---|---:|---:|---:|
-| **ryan_ppo (this repo)** | **1,243,830** | **3.0** | 4.961 |
-| rl_games | 1,093,053 | 3.3 | 4.962 |
-| skrl | 1,073,521 | 3.3 | 4.956 |
-| rsl_rl | 1,033,656 | 3.4 | 4.958 |
-| sb3 | 666,278 | 5.2 | 4.297 |
+| Framework | Throughput (steps/s) | Wall-clock (min) | Final reward | Best reward |
+|---|---:|---:|---:|---:|
+| **ryan_ppo (this repo)** | **1,278,739** | **2.9** | 4.897 | 4.947 |
+| skrl | 1,071,080 | 3.3 | 4.733 | 4.956 |
+| rl_games | 1,049,859 | 3.4 | 4.938 | 4.960 |
+| rsl_rl | 1,032,572 | 3.4 | 4.933 | 4.958 |
+| sb3 | 619,827 | 5.5 | 4.886 | 4.911 |
 
 **Ant** — 2,000 iterations, 32 steps/env
 
-| Framework | Throughput (steps/s) | Wall-clock (min) | Best reward |
-|---|---:|---:|---:|
-| **ryan_ppo (this repo)** | **624,188** | **21.6** | **136.6** |
-| rsl_rl | 556,776 | 24.1 | 136.1 |
-| skrl | 555,062 | 24.2 | 114.6 |
-| rl_games | 554,338 | 24.2 | 129.1 |
-| sb3 | 387,591 | 34.4 | 134.3 |
+| Framework | Throughput (steps/s) | Wall-clock (min) | Final reward | Best reward |
+|---|---:|---:|---:|---:|
+| **ryan_ppo (this repo)** | **634,459** | **21.3** | **139.2** | **140.1** |
+| rsl_rl | 563,325 | 23.8 | 135.5 | 136.1 |
+| skrl | 555,006 | 24.2 | 113.1 | 114.6 |
+| rl_games | 553,812 | 24.2 | 127.3 | 129.2 |
+| sb3 | 385,666 | 34.5 | 132.9 | 134.3 |
 
-**Reach** — 7,500 iterations, 24 steps/env
+**Reach** — 5,000 iterations, 24 steps/env
 
-| Framework | Throughput (steps/s) | Wall-clock (min) | Best reward |
-|---|---:|---:|---:|
-| **ryan_ppo (this repo)** | **1,283,631** | **29.5** | **0.927** |
-| skrl | 1,084,497 | 34.7 | 0.861 |
-| rl_games | 1,072,870 | 35.1 | 0.900 |
-| rsl_rl | 844,198 | 44.3 | 0.640 |
-| sb3 | 627,026 | 59.5 | 0.727 |
+| Framework | Throughput (steps/s) | Wall-clock (min) | Final reward | Best reward |
+|---|---:|---:|---:|---:|
+| **ryan_ppo (this repo)** | **1,315,430** | **19.4** | 0.920 | 0.926 |
+| skrl | 1,089,609 | 23.2 | 0.948 | 0.959 |
+| rl_games | 1,074,289 | 23.6 | 0.634 | 0.932 |
+| rsl_rl | 848,041 | 29.7 | 0.751 | 0.882 |
+| sb3 | 627,703 | 39.8 | 0.264 | 0.892 |
 
-Across all three tasks, `ryan_ppo` posts the **highest throughput and fastest wall-clock** of any framework tested — 12–18% ahead of the next-quickest library, and up to 2× faster end-to-end than SB3. Its reward is **at or above the best of any library** on every task: it ties the field on Cartpole, edges rsl_rl for the top spot on Ant (while finishing several minutes sooner), and reaches the highest reward on Reach. On Reach it also *holds* that peak — where the other frameworks peak mid-run and then regress toward ~0.6, `ryan_ppo` stays near its best through the end of training (final ≈ 0.91 vs best ≈ 0.93).
+Across all three tasks, `ryan_ppo` posts the **highest throughput and fastest wall-clock** of any framework tested — 13–21% ahead of the next-quickest library, and roughly 2× faster end-to-end than SB3. On peak reward the result is mixed: it takes the top spot on Ant, while skrl reaches a higher peak on Reach (0.959 vs 0.926) and rl_games edges it on Cartpole (4.960 vs 4.947, a margin small enough that every GPU library has effectively solved the task). Where it separates from the field is in **holding** what it reaches. On Reach it keeps 99.4% of its peak through the end of training (final 0.920 vs best 0.926), where rl_games falls to 68% of its own peak and sb3 to 30%, and its three seeds finish within 0.001 of each other (0.9195–0.9203) against skrl's 0.813–0.969.
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/ryan-donald/ppo/main/images/benchmark_cartpole_reward_vs_time.png" width="100%" alt="Cartpole reward vs wall-clock time" />
